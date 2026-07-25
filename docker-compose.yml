@@ -1,0 +1,15 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: igbz-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: igbz
+      MONGO_INITDB_ROOT_PASSWORD: igbz-dev-password
+    volumes:
+      - mongodb_data:/data/db
+
+volumes:
+  mongodb_data:
