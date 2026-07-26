@@ -1,0 +1,22 @@
+# .NET
+bin/
+obj/
+TestResults/
+*.user
+*.suo
+.vs/
+.vscode/
+
+# Build outputs
+artifacts/
+coverage/
+
+# Local environment
+.env
+.env.*
+!.env.example
+appsettings.Development.local.json
+
+# OS
+.DS_Store
+Thumbs.db
