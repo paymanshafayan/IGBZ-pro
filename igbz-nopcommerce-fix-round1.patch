@@ -1,0 +1,1243 @@
+From 316fa361b14bc34b741f8720e3415344e573bc6c Mon Sep 17 00:00:00 2001
+From: arena-ai-coding-agent <arena-ai-coding-agent@users.noreply.github.com>
+Date: Sat, 8 Aug 2026 06:04:58 +0000
+Subject: [PATCH] =?UTF-8?q?fix:=20=D8=B1=D9=81=D8=B9=20=D9=85=D8=B4=DA=A9?=
+ =?UTF-8?q?=D9=84=D8=A7=D8=AA=20=DB=8C=D8=A7=D9=81=D8=AA=E2=80=8C=D8=B4?=
+ =?UTF-8?q?=D8=AF=D9=87=20=D8=AF=D8=B1=20=D8=A8=D8=A7=D8=B2=D8=A8=DB=8C?=
+ =?UTF-8?q?=D9=86=DB=8C=20=D9=85=D8=B3=D8=AA=D9=82=D9=84=20=DA=A9=D8=AF?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+خطاهای کامپایل:
+- TenantPlanService: برگرداندن امضای InsertPlanAsync (بلوک بی‌سربرگ)
+- TenantStoreSubscription.TrialEndDateUtc -> DateTime? (هماهنگ با .HasValue و builder)
+- AdminCustomersController: Customer.Phone به‌جای Customer.PhoneNumber (فیلد واقعی 4.90)
+
+حلقهٔ ناقص پرداخت:
+- Endpoint تایید واقعی پرداخت: api/mastersite/public/payment/verify و api/tenant/billing/verify-payment
+- OrderPaidEventConsumer: جلوگیری از Provision مجدد (فعال‌سازی اشتراک موجود)
+- گیت فعال‌سازی فروشگاه پلن پولی پس از پرداخت (نگاشت دامنه IsActive=false تا تایید)
+- ValidateSubdomainAvailabilityAsync: دیدن نگاشت‌های غیرفعال (HostNameExistsAsync)
+
+امنیت/صحافی:
+- VerifyCustomDomainCnameAsync: بررسی واقعی CNAME با کوئری DNS دستی
+- OTP به دیتابیس منتقل شد (PhoneOtpCode با SHA-256) به‌جای IMemoryCache
+- کسر کیف‌پول ضد race با Unique Index + مدیریت تداخل در TryDebitAsync
+- Unique Index ضد کمیسیون تکراری Affiliate
+- چرخ‌وفلک: حذف بایاس ماژولار (GetInt32 مستقیم)
+- واترمارک SKU: عرض متناسب با طول متن (TextMeasurer)
+
+مستندسازی: بخش ۱۶ در HANDOFF.md
+---
+ HANDOFF.md                                    |  50 ++++
+ .../Admin/AdminCustomersController.cs         |   8 +-
+ .../Services/ProductPhotoAiStudioService.cs   |  18 +-
+ .../MasterSiteLandingController.cs            |  58 +++++
+ .../Consumers/OrderPaidEventConsumer.cs       |  50 ++--
+ .../Controllers/TenantBillingController.cs    |  54 +++-
+ .../Data/EntityBuilders.cs                    |  20 +-
+ .../Data/SchemaMigration.cs                   |  41 +++
+ .../Domain/PhoneOtpCode.cs                    |  21 ++
+ .../Domain/TenantPlan.cs                      |   6 +-
+ .../GamificationAndAffiliateService.cs        |   7 +-
+ .../Services/PhoneOtpAuthService.cs           |  55 +++-
+ .../Services/StoreDomainMappingService.cs     | 235 +++++++++++++++++-
+ .../Services/TenantPlanService.cs             |  96 ++++++-
+ .../Services/TenantProvisioningService.cs     |  27 +-
+ .../Services/WalletService.cs                 |  33 ++-
+ 16 files changed, 723 insertions(+), 56 deletions(-)
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/PhoneOtpCode.cs
+
+diff --git a/HANDOFF.md b/HANDOFF.md
+index f6bd6f0..5e7c81e 100644
+--- a/HANDOFF.md
++++ b/HANDOFF.md
+@@ -387,3 +387,53 @@ API را برای فراخوانی Cross-Origin از یک دامنهٔ کامل
+ - الگوی Ledger (SUM = موجودی) برای هر مقدار انباشتی مالی اجباری است؛ هرگز فیلد «موجودی فعلی» جدا نساز.
+ - هر عملیات مالی باید Idempotent باشد (شناسهٔ یکتا برای جلوگیری از تکرار).
+ - هیچ سرویس یکپارچه‌سازی نباید بدون فراخوانی HTTP واقعی «موفق» اعلام کند.
++
++---
++
++## ۱۶. دور اصلاحات پس از بازبینی مستقل کد (این کامیت)
++
++در بازبینی مستقل کل کدبیس (بدون تغییر) چند مشکل پیدا و در این کامیت رفع شد:
++
++### خطاهای کامپایل (بحرانی)
++1. **`TenantPlanService.cs` — امضای `InsertPlanAsync` حذف شده بود**: یک بلوک بی‌سربرگ
++   `{ await _planRepository.InsertAsync(plan); }` بعد از `GetActivePlanForStoreAsync` باقی مانده بود
++   (یعنی کل پلاگین MultiTenantStores و هر ۳ پلاگین وابسته کامپایل نمی‌شدند). امضا برگردانده شد.
++2. **`TrialEndDateUtc` غیرnullable ولی با `.HasValue`**: خاصیت `TenantStoreSubscription.TrialEndDateUtc`
++   به `DateTime?` تغییر کرد (دو محل استفاده در TenantPlanService و TenantBillingController با
++   `.HasValue`/`.Value` از قبل هماهنگ بودند) + ستون Migration به `.Nullable()` تغییر کرد.
++3. **`Customer.PhoneNumber` در `AdminCustomersController`**: طبق ممیزی مقابل سورس واقعی، فیلد واقعی
++   `Customer.Phone` است (نه `PhoneNumber`) — در دو جا اصلاح شد.
++
++### حلقهٔ ناقص پرداخت ثبت‌نام/تمدید (عملکردی)
++4. **Endpoint تایید پرداخت اضافه شد**: `POST api/mastersite/public/payment/verify`
++   (MasterSiteLandingController) و `POST api/tenant/billing/verify-payment` (TenantBillingController).
++   قبلاً Signup/CreateRenewalOrder لینک درگاه می‌دادند ولی هیچ Verify واقعی وجود نداشت — حالا:
++   تایید واقعی Parbad → `MarkOrderAsPaidAsync` → فعال‌سازی اشتراک و نگاشت دامنه.
++5. **جلوگیری از Provision مجدد در `OrderPaidEventConsumer`**: اگر اشتراکِ PendingPayment همان
++   مشتری+پلن از قبل وجود داشت (مسیر ثبت‌نام)، فقط فعال می‌شود؛ Provision فقط برای خرید مستقیم
++   بدون ثبت‌نام قبلی اجرا می‌شود (و در آن مسیر اشتراک Active + مدت از مبلغ سفارش ساخته می‌شود).
++6. **گیت فعال‌سازی فروشگاه**: نگاشت دامنهٔ فروشگاه جدید برای پلن پولی `IsActive=false` ساخته
++   می‌شود (فقط پس از تایید واقعی پرداخت فعال می‌شود)؛ پلن آزمایشی همان لحظه فعال است.
++7. **`ValidateSubdomainAvailabilityAsync`** حالا نگاشت‌های غیرفعال را هم می‌بیند (متد جدید
++   `HostNameExistsAsync`) تا زیردامنهٔ در انتظار پرداخت دوباره Provision نشود.
++
++### امنیت/صحافی
++8. **`VerifyCustomDomainCnameAsync` واقعی شد**: کوئری DNS دستی (QTYPE=CNAME) به سرور DNS سیستم با
++   پارس‌گر فشرده‌سازی؛ قبلاً فقط resolve شدن دامنه چک می‌شد (هر دامنهٔ زنده‌ای «تایید» می‌شد).
++9. **OTP به دیتابیس منتقل شد**: جدول `PhoneOtpCode` (کد به‌صورت SHA-256) — قبلاً IMemoryCache بود
++   و با ری‌استارت/چند نمونه از بین می‌رفت. حافظه فقط برای throttle ۶۰ ثانیه‌ای باقی ماند.
++10. **کسر کیف‌پول ضد race شد**: Unique Index `IX_WalletLedger_DebitIdempotency` روی
++    (CustomerId, StoreId, Reason, ReferenceCode) + مدیریت تداخل در `TryDebitAsync` (کسر دوبل
++    کلیک هم‌زمان دیگر ممکن نیست). برای کمیسیون Affiliate هم Unique Index روی
++    (OrderId, ReferrerCustomerId) اضافه شد.
++11. **چرخ‌وفلک**: انتخاب جایزه با `RandomNumberGenerator.GetInt32(0, N)` مستقیم (حذف بایاس
++    ماژولار `% Length`).
++12. **واترمارک SKU**: عرض مستطیل پس‌زمینه با `TextMeasurer` اندازه‌گیری می‌شود (قبلاً ۲۲۰px ثابت
++    بود و برای SKUهای بلند سرریز می‌کرد).
++
++### هنوز باز (خارج از این کامیت — نیازمند ورودی خارجی)
++- Endpointهای نمادین AI/ترجمه/BNPL/پرداخت (`*.local`) — نیازمند مستندات واقعی API سرویس‌ها.
++- اجرای `dotnet build` واقعی با سورس nopCommerce 4.90.6 (این محیط سورس/اینترنت ندارد) — این کامیت
++  حداقل خطاهای کامپایلِ قابل‌تشخیصِ ایستا را رفع کرده، ولی بیلد واقعی باید روی سیستم کاربر اجرا شود.
++- پیاده‌سازی `IPaymentMethod` استاندارد برای Storefront (فعلاً پرداخت فقط از مسیر API است).
++- تایید شکل دقیق Payload وب‌هاوک متا (mentions/comments) با یک Webhook واقعی.
+diff --git a/Plugins/Nop.Plugin.Api/Controllers/Admin/AdminCustomersController.cs b/Plugins/Nop.Plugin.Api/Controllers/Admin/AdminCustomersController.cs
+index 5aeb08f..135d0e6 100644
+--- a/Plugins/Nop.Plugin.Api/Controllers/Admin/AdminCustomersController.cs
++++ b/Plugins/Nop.Plugin.Api/Controllers/Admin/AdminCustomersController.cs
+@@ -63,9 +63,9 @@ namespace Nop.Plugin.Api.Controllers.Admin
+             );
+ 
+             var resultItems = pagedCustomers
+-                .Where(c => string.IsNullOrEmpty(query) || 
++                .Where(c => string.IsNullOrEmpty(query) ||
+                             (c.Email != null && c.Email.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+-                            (c.PhoneNumber != null && c.PhoneNumber.Contains(query)))
++                            (c.Phone != null && c.Phone.Contains(query)))
+                 .Select(c =>
+                 {
+                     var hasStats = customerStats.TryGetValue(c.Id, out var stats);
+@@ -73,7 +73,9 @@ namespace Nop.Plugin.Api.Controllers.Admin
+                     {
+                         Id = c.Id,
+                         Email = c.Email,
+-                        PhoneNumber = c.PhoneNumber,
++                        // فیلد واقعی Customer در nopCommerce 4.90 «Phone» است (نه PhoneNumber — طبق
++                        // ممیزی مقابل سورس واقعی؛ PhoneNumber در این نسخه وجود ندارد و خطای Build می‌داد).
++                        PhoneNumber = c.Phone,
+                         RegisteredInStoreId = c.RegisteredInStoreId,
+                         CreatedOnUtc = c.CreatedOnUtc,
+                         OrdersCount = hasStats ? stats.OrdersCount : 0,
+diff --git a/Plugins/Nop.Plugin.Misc.InstagramAssistant/Services/ProductPhotoAiStudioService.cs b/Plugins/Nop.Plugin.Misc.InstagramAssistant/Services/ProductPhotoAiStudioService.cs
+index 2a8f7bc..4ca334b 100644
+--- a/Plugins/Nop.Plugin.Misc.InstagramAssistant/Services/ProductPhotoAiStudioService.cs
++++ b/Plugins/Nop.Plugin.Misc.InstagramAssistant/Services/ProductPhotoAiStudioService.cs
+@@ -70,14 +70,22 @@ namespace Nop.Plugin.Misc.InstagramAssistant.Services
+             var font = SystemFonts.CreateFont("Arial", 22, FontStyle.Bold);
+             var watermarkText = $"کد محصول: {productSku}";
+ 
+-            float padding = 20f;
+-            float x = padding;
+-            float y = image.Height - 50f;
++            // اندازه‌گیری واقعی متن تا مستطیل پس‌زمینه برای SKUهای بلند هم متناسب باشد
++            // (نسخهٔ قبلی عرض ثابت ۲۲۰px داشت و برای SKUهای بلند متن سرریز می‌کرد).
++            var textBounds = TextMeasurer.MeasureBounds(watermarkText, new TextOptions(font));
++            float padding = 12f;
++
++            var maxRectWidth = Math.Max(1f, image.Width - 4f);
++            var rectWidth = Math.Clamp(textBounds.Width + padding * 2, 1f, maxRectWidth);
++            var rectHeight = Math.Max(1f, textBounds.Height + padding);
++
++            float x = 12f;
++            float y = Math.Max(0f, image.Height - rectHeight - 12f);
+ 
+             image.Mutate(ctx =>
+             {
+-                ctx.Fill(Color.FromRgba(10, 15, 26, 220), new RectangleF(x - 10, y - 5, 220, 35));
+-                ctx.DrawText(watermarkText, font, Color.White, new PointF(x, y));
++                ctx.Fill(Color.FromRgba(10, 15, 26, 220), new RectangleF(x, y, rectWidth, rectHeight));
++                ctx.DrawText(watermarkText, font, Color.White, new PointF(x + padding, y + padding / 2));
+             });
+ 
+             using var ms = new MemoryStream();
+diff --git a/Plugins/Nop.Plugin.Misc.MasterSiteHub/Controllers/MasterSiteLandingController.cs b/Plugins/Nop.Plugin.Misc.MasterSiteHub/Controllers/MasterSiteLandingController.cs
+index bd6f461..6e1d989 100644
+--- a/Plugins/Nop.Plugin.Misc.MasterSiteHub/Controllers/MasterSiteLandingController.cs
++++ b/Plugins/Nop.Plugin.Misc.MasterSiteHub/Controllers/MasterSiteLandingController.cs
+@@ -6,6 +6,7 @@ namespace Nop.Plugin.Misc.MasterSiteHub.Controllers
+     using System.Threading.Tasks;
+     using Microsoft.AspNetCore.Mvc;
+     using Nop.Core;
++    using Nop.Core.Domain.Orders;
+     using Nop.Services.Catalog;
+     using Nop.Services.Media;
+     using Nop.Services.Orders;
+@@ -26,6 +27,7 @@ namespace Nop.Plugin.Misc.MasterSiteHub.Controllers
+         private readonly ICategoryService _categoryService;
+         private readonly IPictureService _pictureService;
+         private readonly IOrderService _orderService;
++        private readonly IOrderProcessingService _orderProcessingService;
+         private readonly IParbadPaymentService _paymentService;
+         private readonly IJwtTokenService _jwtTokenService;
+         private readonly ILandingContentBlockService _contentBlockService;
+@@ -39,6 +41,7 @@ namespace Nop.Plugin.Misc.MasterSiteHub.Controllers
+             ICategoryService categoryService,
+             IPictureService pictureService,
+             IOrderService orderService,
++            IOrderProcessingService orderProcessingService,
+             IParbadPaymentService paymentService,
+             IJwtTokenService jwtTokenService,
+             ILandingContentBlockService contentBlockService)
+@@ -51,6 +54,7 @@ namespace Nop.Plugin.Misc.MasterSiteHub.Controllers
+             _categoryService = categoryService;
+             _pictureService = pictureService;
+             _orderService = orderService;
++            _orderProcessingService = orderProcessingService;
+             _paymentService = paymentService;
+             _jwtTokenService = jwtTokenService;
+             _contentBlockService = contentBlockService;
+@@ -223,6 +227,49 @@ namespace Nop.Plugin.Misc.MasterSiteHub.Controllers
+             });
+         }
+ 
++        /// <summary>
++        /// تایید واقعی پرداخت اشتراک ثبت‌نام — حلقهٔ ناقص قبلی: Signup لینک درگاه برمی‌گرداند ولی
++        /// هیچ Endpointی برای Verify بازگشت از درگاه وجود نداشت (فقط به کد Next.js بیرون ریپو
++        /// موکول شده بود که چیزی برای صدا زدن نداشت). حالا: تایید واقعی از Parbad → علامت‌گذاری
++        /// سفارش به‌عنوان پرداخت‌شده (که OrderPaidEvent را هم فعال می‌کند) → فعال‌سازی اشتراک و
++        /// دسترسی فروشگاه. سایت Next.js باید بعد از بازگشت کاربر از درگاه، همین Endpoint را با
++        /// (orderId, storeId, trackingNumber, amountToman) صدا بزند.
++        /// </summary>
++        [HttpPost("payment/verify")]
++        public async Task<IActionResult> VerifySignupPayment([FromBody] TenantSignupPaymentVerifyDto dto)
++        {
++            if (dto == null || dto.OrderId <= 0 || string.IsNullOrWhiteSpace(dto.TrackingNumber) || dto.AmountToman <= 0)
++                return BadRequest(new { success = false, message = "اطلاعات تایید پرداخت ناقص است." });
++
++            var order = await _orderService.GetOrderByIdAsync(dto.OrderId);
++            if (order == null)
++                return NotFound(new { success = false, message = "سفارش اشتراک یافت نشد." });
++
++            var verifyResult = await _paymentService.VerifyPaymentAsync(
++                TenantPlanService.MasterPlatformStoreId, dto.TrackingNumber, dto.AmountToman);
++
++            if (!verifyResult.IsSuccess)
++                return BadRequest(new { success = false, message = verifyResult.Message });
++
++            // فقط در صورتی سفارش پرداخت‌شده علامت می‌خورد که قبلاً پرداخت نشده باشد
++            // (MarkOrderAsPaidAsync رویداد OrderPaidEvent را فعال می‌کند و Consumer آن، مسیر
++            // فعال‌سازی را هم انجام می‌دهد — اینجا Idempotent است).
++            if (order.PaymentStatusId != (int)PaymentStatus.Paid)
++                await _orderProcessingService.MarkOrderAsPaidAsync(order);
++
++            var subscriptionActivated = false;
++            if (dto.StoreId > 0)
++                subscriptionActivated = await _tenantPlanService.ActivateSubscriptionAsync(dto.StoreId);
++
++            return Ok(new
++            {
++                success = true,
++                alreadyProcessed = verifyResult.AlreadyVerifiedBefore,
++                subscriptionActivated,
++                message = "پرداخت با موفقیت تایید شد و اشتراک فروشگاه فعال گردید."
++            });
++        }
++
+         /// <summary>
+         /// استعلام فوری آنلاین بودن و امکان رزرو زیردامنه قبل از ثبت‌نام
+         /// </summary>
+@@ -314,4 +361,15 @@ namespace Nop.Plugin.Misc.MasterSiteHub.Controllers
+         public string GatewayName { get; set; }
+         public string PaymentCallbackUrl { get; set; }
+     }
++
++    public class TenantSignupPaymentVerifyDto
++    {
++        public int OrderId { get; set; }
++
++        /// <summary>شناسهٔ فروشگاه ساخته‌شده در Signup — برای فعال‌سازی اشتراک آن.</summary>
++        public int StoreId { get; set; }
++
++        public string TrackingNumber { get; set; }
++        public decimal AmountToman { get; set; }
++    }
+ }
+\ No newline at end of file
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Consumers/OrderPaidEventConsumer.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Consumers/OrderPaidEventConsumer.cs
+index 4729ec2..1b676d0 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Consumers/OrderPaidEventConsumer.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Consumers/OrderPaidEventConsumer.cs
+@@ -47,26 +47,42 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Consumers
+             {
+                 // بررسی اینکه آیا این محصول متناظر با یک پلن چندفروشگاهی است
+                 var tenantPlan = await _tenantPlanService.GetPlanByProductIdAsync(item.ProductId);
+-                if (tenantPlan != null)
++                if (tenantPlan == null)
++                    continue;
++
++                // مسیر «ثبت‌نام از سایت مادر»: فروشگاه و اشتراکِ PendingPayment از قبل ساخته شده‌اند —
++                // فقط باید فعال شوند. Provision مجدد باعث ساخت فروشگاه تکراری/خطا می‌شد.
++                var existingSubscription = await _tenantPlanService.GetSubscriptionByOwnerAndPlanAsync(order.CustomerId, tenantPlan.Id);
++                if (existingSubscription != null)
++                {
++                    await _tenantPlanService.ActivateSubscriptionAsync(existingSubscription.StoreId);
++                    continue;
++                }
++
++                // مسیر «خرید مستقیم پلن از سایت مادر» (بدون ثبت‌نام قبلی): فروشگاه از صفر ساخته می‌شود.
++                var requestedSubdomain = await _genericAttributeService.GetAttributeAsync<string>(customer, "PendingSubdomain") ?? $"store{order.Id}";
++                var requestedStoreName = await _genericAttributeService.GetAttributeAsync<string>(customer, "PendingStoreName") ?? $"فروشگاه {customer.Email}";
++
++                var provisionResult = await _tenantProvisioningService.ProvisionNewTenantStoreAsync(new ProvisionTenantRequest
+                 {
+-                    // استخراج زیردامنه و نام فروشگاه درخواستی از خصوصیات سفارشی خرید (Checkout Attributes)
+-                    var requestedSubdomain = await _genericAttributeService.GetAttributeAsync<string>(customer, "PendingSubdomain") ?? $"store{order.Id}";
+-                    var requestedStoreName = await _genericAttributeService.GetAttributeAsync<string>(customer, "PendingStoreName") ?? $"فروشگاه {customer.Email}";
++                    StoreName = requestedStoreName,
++                    Subdomain = requestedSubdomain,
++                    AdminEmail = customer.Email,
++                    AdminPhoneNumber = customer.Phone,
++                    PlanId = tenantPlan.Id
++                });
+ 
+-                    var provisionResult = await _tenantProvisioningService.ProvisionNewTenantStoreAsync(new ProvisionTenantRequest
+-                    {
+-                        StoreName = requestedStoreName,
+-                        Subdomain = requestedSubdomain,
+-                        AdminEmail = customer.Email,
+-                        AdminPhoneNumber = customer.Phone,
+-                        PlanId = tenantPlan.Id
+-                    });
++                if (provisionResult.Success)
++                {
++                    // مدت اشتراک را از مبلغ واقعی پرداخت‌شده نسبت به قیمت‌های پلن استخراج کن
++                    // (چرخهٔ صورتحساب در سفارش ذخیره نشده، ولی مبلغ آن را مشخص می‌کند)
++                    var durationDays = order.OrderTotal >= tenantPlan.PriceYearly ? 365
++                        : order.OrderTotal >= tenantPlan.PriceSixMonths ? 183
++                        : 30;
+ 
+-                    if (provisionResult.Success)
+-                    {
+-                        // فعال‌سازی آنی فروشگاه
+-                        await _tenantProvisioningService.ActivateTenantStoreAsync(provisionResult.StoreId);
+-                    }
++                    // ساخت اشتراک Active + فعال‌سازی آنی دسترسی فروشگاه (پرداخت انجام شده)
++                    await _tenantPlanService.EnsureSubscriptionActiveAsync(
++                        provisionResult.StoreId, order.CustomerId, tenantPlan.Id, durationDays);
+                 }
+             }
+         }
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/TenantBillingController.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/TenantBillingController.cs
+index 74c34a0..de19a19 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/TenantBillingController.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/TenantBillingController.cs
+@@ -4,6 +4,8 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Controllers
+     using System.Threading.Tasks;
+     using Microsoft.AspNetCore.Mvc;
+     using Nop.Core;
++    using Nop.Core.Domain.Orders;
++    using Nop.Services.Orders;
+     using Nop.Plugin.Misc.MultiTenantStores.Services;
+     using Nop.Plugin.Misc.MultiTenantStores.Domain;
+ 
+@@ -22,15 +24,21 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Controllers
+         private readonly IWorkContext _workContext;
+         private readonly ITenantPlanService _tenantPlanService;
+         private readonly IParbadPaymentService _paymentService;
++        private readonly IOrderService _orderService;
++        private readonly IOrderProcessingService _orderProcessingService;
+ 
+         public TenantBillingController(
+             IWorkContext workContext,
+             ITenantPlanService tenantPlanService,
+-            IParbadPaymentService paymentService)
++            IParbadPaymentService paymentService,
++            IOrderService orderService,
++            IOrderProcessingService orderProcessingService)
+         {
+             _workContext = workContext;
+             _tenantPlanService = tenantPlanService;
+             _paymentService = paymentService;
++            _orderService = orderService;
++            _orderProcessingService = orderProcessingService;
+         }
+ 
+         /// <summary>
+@@ -120,6 +128,43 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Controllers
+             });
+         }
+ 
++        /// <summary>
++        /// تایید واقعی پرداخت سفارش تمدید/ارتقا (بازگشت از درگاه) — مانند مسیر ثبت‌نام، فقط بعد از
++        /// تایید واقعی Parbad (نه صرفاً بازگشت کاربر) سفارش پرداخت‌شده علامت می‌خورد و اشتراک
++        /// فعال می‌شود. CallbackUrl که اپ/سایت مادر به درگاه داده، باید به همین Endpoint اشاره کند.
++        /// </summary>
++        [HttpPost("verify-payment")]
++        public async Task<IActionResult> VerifyRenewalPayment(
++            [FromHeader(Name = "X-Store-Id")] int storeId,
++            [FromBody] RenewalPaymentVerifyDto dto)
++        {
++            if (storeId <= 0 || dto == null || dto.OrderId <= 0 || string.IsNullOrWhiteSpace(dto.TrackingNumber) || dto.AmountToman <= 0)
++                return BadRequest(new { success = false, message = "اطلاعات تایید پرداخت ناقص است." });
++
++            var order = await _orderService.GetOrderByIdAsync(dto.OrderId);
++            if (order == null)
++                return NotFound(new { success = false, message = "سفارش تمدید یافت نشد." });
++
++            var verifyResult = await _paymentService.VerifyPaymentAsync(
++                TenantPlanService.MasterPlatformStoreId, dto.TrackingNumber, dto.AmountToman);
++
++            if (!verifyResult.IsSuccess)
++                return BadRequest(new { success = false, message = verifyResult.Message });
++
++            if (order.PaymentStatusId != (int)PaymentStatus.Paid)
++                await _orderProcessingService.MarkOrderAsPaidAsync(order);
++
++            var subscriptionActivated = await _tenantPlanService.ActivateSubscriptionAsync(storeId);
++
++            return Ok(new
++            {
++                success = true,
++                alreadyProcessed = verifyResult.AlreadyVerifiedBefore,
++                subscriptionActivated,
++                message = "پرداخت تایید شد و اشتراک فروشگاه فعال گردید."
++            });
++        }
++
+         private static BillingCycle ParseBillingCycle(string value)
+         {
+             return value?.Trim().ToLowerInvariant() switch
+@@ -131,6 +176,13 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Controllers
+         }
+     }
+ 
++    public class RenewalPaymentVerifyDto
++    {
++        public int OrderId { get; set; }
++        public string TrackingNumber { get; set; }
++        public decimal AmountToman { get; set; }
++    }
++
+     public class RenewalRequestDto
+     {
+         public int PlanId { get; set; }
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs
+index cdff49a..e775e9a 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs
+@@ -53,7 +53,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Data
+                 .WithColumn(nameof(TenantStoreSubscription.TenantPlanId)).AsInt32().NotNullable()
+                 .WithColumn(nameof(TenantStoreSubscription.OwnerCustomerId)).AsInt32().NotNullable()
+                 .WithColumn(nameof(TenantStoreSubscription.Status)).AsInt32().NotNullable()
+-                .WithColumn(nameof(TenantStoreSubscription.TrialEndDateUtc)).AsDateTime2().NotNullable()
++                .WithColumn(nameof(TenantStoreSubscription.TrialEndDateUtc)).AsDateTime2().Nullable()
+                 .WithColumn(nameof(TenantStoreSubscription.StartDateUtc)).AsDateTime2().NotNullable()
+                 .WithColumn(nameof(TenantStoreSubscription.NextBillingDateUtc)).AsDateTime2().NotNullable()
+                 .WithColumn(nameof(TenantStoreSubscription.AutoRenew)).AsBoolean().NotNullable()
+@@ -255,4 +255,22 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Data
+                 .WithColumn(nameof(LandingContentBlock.IsActive)).AsBoolean().NotNullable();
+         }
+     }
++
++    /// <summary>
++    /// ذخیرهٔ DB-محور کدهای OTP ورود با شماره موبایل — به‌جای IMemoryCache که با ری‌استارت اپ یا
++    /// چند نمونه (Multi-Instance) کدهای در انتظار تایید را از دست می‌داد.
++    /// </summary>
++    public class PhoneOtpCodeBuilder : NopEntityBuilder<PhoneOtpCode>
++    {
++        public override void MapEntity(CreateTableExpressionBuilder table)
++        {
++            table
++                .WithColumn(nameof(PhoneOtpCode.StoreId)).AsInt32().NotNullable()
++                .WithColumn(nameof(PhoneOtpCode.PhoneNumber)).AsString(20).NotNullable()
++                .WithColumn(nameof(PhoneOtpCode.CodeHash)).AsString(200).NotNullable()
++                .WithColumn(nameof(PhoneOtpCode.CreatedOnUtc)).AsDateTime2().NotNullable()
++                .WithColumn(nameof(PhoneOtpCode.ExpiresOnUtc)).AsDateTime2().NotNullable()
++                .WithColumn(nameof(PhoneOtpCode.Used)).AsBoolean().NotNullable();
++        }
++    }
+ }
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs
+index 71a5bf9..b1a878f 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs
+@@ -105,6 +105,47 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Data
+                     .OnColumn(nameof(TenantIntegrationCredential.ProviderKey)).Ascending();
+             }
+ 
++            // قاعدهٔ Idempotency مالی (بخش ۱۸.۶ سند معماری): کسر/واریز با همان
++            // (CustomerId, StoreId, Reason, ReferenceCode) نباید دوبار ثبت شود. این Unique Index
++            // تضمین سطح دیتابیس برای WalletService.TryDebitAsync است تا دو درخواست هم‌زمان (کلیک دوبل
++            // یا Retry) نتوانند دو بار از کیف‌پول کسر کنند. (ReferenceCode خالی/null در SQL Server و
++            // MySQL مجاز به تکرار است، پس فقط تراکنش‌های دارای شناسهٔ یکتا محدود می‌شوند.)
++            if (Schema.Table(nameof(WalletLedger)).Exists()
++                && !Schema.Table(nameof(WalletLedger)).Index("IX_WalletLedger_DebitIdempotency").Exists())
++            {
++                Create.Index("IX_WalletLedger_DebitIdempotency")
++                    .OnTable(nameof(WalletLedger))
++                    .OnColumn(nameof(WalletLedger.CustomerId)).Ascending()
++                    .OnColumn(nameof(WalletLedger.StoreId)).Ascending()
++                    .OnColumn(nameof(WalletLedger.Reason)).Ascending()
++                    .OnColumn(nameof(WalletLedger.ReferenceCode)).Ascending()
++                    .WithOptions().Unique();
++            }
++
++            // جلوگیری از ثبت کمیسیون تکراری روی همان سفارش برای همان معرف (حتی با دو Request هم‌زمان)
++            if (Schema.Table(nameof(AffiliateCommissionLedger)).Exists()
++                && !Schema.Table(nameof(AffiliateCommissionLedger)).Index("IX_AffiliateCommissionLedger_Order_Referrer").Exists())
++            {
++                Create.Index("IX_AffiliateCommissionLedger_Order_Referrer")
++                    .OnTable(nameof(AffiliateCommissionLedger))
++                    .OnColumn(nameof(AffiliateCommissionLedger.OrderId)).Ascending()
++                    .OnColumn(nameof(AffiliateCommissionLedger.ReferrerCustomerId)).Ascending()
++                    .WithOptions().Unique();
++            }
++
++            // جدول پایدار کدهای OTP (به‌جای IMemoryCache — با ری‌استارت/چند نمونه از بین نمی‌رود)
++            if (!Schema.Table(nameof(PhoneOtpCode)).Exists())
++                Create.TableFor<PhoneOtpCode>();
++
++            if (Schema.Table(nameof(PhoneOtpCode)).Exists()
++                && !Schema.Table(nameof(PhoneOtpCode)).Index("IX_PhoneOtpCode_Store_Phone").Exists())
++            {
++                Create.Index("IX_PhoneOtpCode_Store_Phone")
++                    .OnTable(nameof(PhoneOtpCode))
++                    .OnColumn(nameof(PhoneOtpCode.StoreId)).Ascending()
++                    .OnColumn(nameof(PhoneOtpCode.PhoneNumber)).Ascending();
++            }
++
+             if (!Schema.Table(nameof(LandingContentBlock)).Exists())
+                 Create.TableFor<LandingContentBlock>();
+ 
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/PhoneOtpCode.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/PhoneOtpCode.cs
+new file mode 100644
+index 0000000..38c1238
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/PhoneOtpCode.cs
+@@ -0,0 +1,21 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Domain
++{
++    using System;
++    using Nop.Core;
++
++    /// <summary>
++    /// ذخیره‌سازی پایدار (DB) کدهای یک‌بارمصرف ورود با شماره موبایل — جایگزین نگهداری فقط در
++    /// حافظه (IMemoryCache) که با ری‌استارت اپلیکیشن یا در حالت چند نمونه (Multi-Instance) کدهای
++    /// در انتظار تایید را از دست می‌داد. کد به‌صورت Hash (SHA-256 از storeId+phone+code) ذخیره
++    /// می‌شود تا نشت دیتابیس به‌تنهایی کافی نباشد؛ رکورد پس از تایید موفق با Used=true باطل می‌شود.
++    /// </summary>
++    public class PhoneOtpCode : BaseEntity
++    {
++        public int StoreId { get; set; }
++        public string PhoneNumber { get; set; }
++        public string CodeHash { get; set; }
++        public DateTime CreatedOnUtc { get; set; }
++        public DateTime ExpiresOnUtc { get; set; }
++        public bool Used { get; set; }
++    }
++}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/TenantPlan.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/TenantPlan.cs
+index 0075aeb..3f4ab8d 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/TenantPlan.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/TenantPlan.cs
+@@ -60,7 +60,11 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Domain
+ 
+         public SubscriptionStatus Status { get; set; }
+ 
+-        public DateTime TrialEndDateUtc { get; set; }
++        /// <summary>
++        /// پایان دورهٔ آزمایشی — برای پلن‌های پولی (بدون دورهٔ آزمایشی) null است، پس nullable تعریف
++        /// شده تا با چک‌های <c>.HasValue</c> در TenantPlanService و TenantBillingController سازگار باشد.
++        /// </summary>
++        public DateTime? TrialEndDateUtc { get; set; }
+         public DateTime StartDateUtc { get; set; }
+         public DateTime NextBillingDateUtc { get; set; }
+         public bool AutoRenew { get; set; }
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/GamificationAndAffiliateService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/GamificationAndAffiliateService.cs
+index 1921192..394eb15 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/GamificationAndAffiliateService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/GamificationAndAffiliateService.cs
+@@ -75,7 +75,9 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+                 (Title: "تخفیف ۲۰٪", Percent: 20m),
+                 (Title: "تخفیف ۵٪", Percent: 5m)
+             };
+-            var selected = rewardOptions[RandomNumberGenerator() % rewardOptions.Length];
++            // GetInt32(0, max) در دات‌نت با حذف بایاس ماژولار (rejection sampling) یکنواخت است —
++            // الگوی قبلی GetInt32(0, int.MaxValue) % Length بایاس جزئی داشت.
++            var selected = rewardOptions[System.Security.Cryptography.RandomNumberGenerator.GetInt32(0, rewardOptions.Length)];
+             var couponCode = $"SPIN-{customerId}-{DateTime.UtcNow:yyyyMMddHHmmss}";
+ 
+             await _discountService.InsertDiscountAsync(new Discount
+@@ -137,9 +139,6 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+ 
+             return sentCount;
+         }
+-
+-        private static int RandomNumberGenerator() =>
+-            System.Security.Cryptography.RandomNumberGenerator.GetInt32(0, int.MaxValue);
+     }
+ 
+     public class SpinWheelRewardResult
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/PhoneOtpAuthService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/PhoneOtpAuthService.cs
+index 7b34fdf..6ab6323 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/PhoneOtpAuthService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/PhoneOtpAuthService.cs
+@@ -4,9 +4,12 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+     using System.Linq;
+     using System.Net.Http;
+     using System.Security.Cryptography;
++    using System.Text;
+     using System.Threading.Tasks;
+     using Microsoft.Extensions.Caching.Memory;
+     using Nop.Core.Domain.Customers;
++    using Nop.Data;
++    using Nop.Plugin.Misc.MultiTenantStores.Domain;
+     using Nop.Services.Common;
+     using Nop.Services.Customers;
+ 
+@@ -45,6 +48,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+         private readonly IJwtTokenService _jwtTokenService;
+         private readonly IHttpClientFactory _httpClientFactory;
+         private readonly IMemoryCache _memoryCache;
++        private readonly IRepository<PhoneOtpCode> _otpRepository;
+ 
+         public PhoneOtpAuthService(
+             ITenantIntegrationCredentialService credentialService,
+@@ -52,7 +56,8 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             IGenericAttributeService genericAttributeService,
+             IJwtTokenService jwtTokenService,
+             IHttpClientFactory httpClientFactory,
+-            IMemoryCache memoryCache)
++            IMemoryCache memoryCache,
++            IRepository<PhoneOtpCode> otpRepository)
+         {
+             _credentialService = credentialService;
+             _customerService = customerService;
+@@ -60,6 +65,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             _jwtTokenService = jwtTokenService;
+             _httpClientFactory = httpClientFactory;
+             _memoryCache = memoryCache;
++            _otpRepository = otpRepository;
+         }
+ 
+         public async Task<(bool success, string errorMessage)> RequestOtpAsync(int storeId, string phoneNumber)
+@@ -100,7 +106,26 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+                 return (false, $"اتصال به سرویس پیامک برقرار نشد: {ex.Message}");
+             }
+ 
+-            _memoryCache.Set(BuildOtpCacheKey(storeId, normalizedPhone), code, OtpTtl);
++            // ذخیرهٔ پایدار کد در دیتابیس (نه فقط حافظه): با ری‌استارت اپ یا در حالت چند نمونه،
++            // کد در انتظار تایید از بین نمی‌رود. قبل از درج، همهٔ کدهای استفاده‌نشدهٔ قبلی همین
++            // شماره (منقضی یا نه) پاک می‌شوند تا در هر لحظه فقط آخرین کد معتبر باشد.
++            var staleCodes = await _otpRepository.GetAllAsync(q =>
++                q.Where(x => x.StoreId == storeId && x.PhoneNumber == normalizedPhone && !x.Used));
++            foreach (var stale in staleCodes)
++                await _otpRepository.DeleteAsync(stale);
++
++            await _otpRepository.InsertAsync(new PhoneOtpCode
++            {
++                StoreId = storeId,
++                PhoneNumber = normalizedPhone,
++                CodeHash = HashOtp(storeId, normalizedPhone, code),
++                CreatedOnUtc = DateTime.UtcNow,
++                ExpiresOnUtc = DateTime.UtcNow.Add(OtpTtl),
++                Used = false
++            });
++
++            // حافظه فقط برای «محدودیت ۶۰ ثانیه بین دو درخواست» استفاده می‌شود (بدون ری‌استارت، بدترین
++            // حالتِ ممکن این است که کاربر بتواند کمی زودتر دوباره درخواست دهد — نه نشت امنیتی)
+             _memoryCache.Set(throttleKey, true, ResendThrottle);
+ 
+             return (true, null);
+@@ -112,11 +137,19 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             if (normalizedPhone == null)
+                 return new PhoneOtpVerifyResult { Success = false, ErrorMessage = "شمارهٔ موبایل نامعتبر است." };
+ 
+-            var otpKey = BuildOtpCacheKey(storeId, normalizedPhone);
+-            if (!_memoryCache.TryGetValue(otpKey, out string cachedCode) || cachedCode != code?.Trim())
++            // خواندن کد از دیتابیس (مقاوم به ری‌استارت/چند نمونه) — فقط آخرین کد استفاده‌نشده و
++            // غیرمنقضی برای این شماره معتبر است؛ کدها به‌صورت Hash ذخیره می‌شوند.
++            var pendingCodes = await _otpRepository.GetAllAsync(q =>
++                q.Where(x => x.StoreId == storeId && x.PhoneNumber == normalizedPhone && !x.Used && x.ExpiresOnUtc >= DateTime.UtcNow)
++                 .OrderByDescending(x => x.CreatedOnUtc));
++
++            var otpRecord = pendingCodes.FirstOrDefault();
++            if (otpRecord == null || otpRecord.CodeHash != HashOtp(storeId, normalizedPhone, code?.Trim()))
+                 return new PhoneOtpVerifyResult { Success = false, ErrorMessage = "کد وارد شده نامعتبر یا منقضی‌شده است." };
+ 
+-            _memoryCache.Remove(otpKey);
++            // باطل‌سازی یک‌بارمصرف: رکورد تاییدشده هرگز دوباره قابل استفاده نیست
++            otpRecord.Used = true;
++            await _otpRepository.UpdateAsync(otpRecord);
+ 
+             // ICustomerService متد تک‌نتیجه‌ای GetCustomerByPhone ندارد؛ همان الگوی تاییدشدهٔ
+             // DeepLinkRoutingController.ResolveStoreByPhone استفاده می‌شود.
+@@ -166,7 +199,17 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             };
+         }
+ 
+-        private static string BuildOtpCacheKey(int storeId, string normalizedPhone) => $"otp-code:{storeId}:{normalizedPhone}";
++        /// <summary>
++        /// Hash کد OTP برای ذخیره‌سازی — کد خام هیچ‌جا (دیتابیس/لاگ) نگهداری نمی‌شود؛ حتی با نشت
++        /// دیتابیس، کد قابل استفاده‌ی مستقیم نیست.
++        /// </summary>
++        private static string HashOtp(int storeId, string phoneNumber, string code)
++        {
++            var raw = $"{storeId}:{phoneNumber}:{code}";
++            using var sha = SHA256.Create();
++            var hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(raw));
++            return Convert.ToHexString(hashBytes).ToLowerInvariant();
++        }
+ 
+         private static string GenerateNumericCode(int length)
+         {
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/StoreDomainMappingService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/StoreDomainMappingService.cs
+index 1d75514..4a854b1 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/StoreDomainMappingService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/StoreDomainMappingService.cs
+@@ -2,7 +2,11 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+ {
+     using System;
+     using System.Collections.Generic;
++    using System.IO;
+     using System.Linq;
++    using System.Net;
++    using System.Net.Sockets;
++    using System.Text;
+     using System.Threading.Tasks;
+     using Nop.Data;
+     using Nop.Plugin.Misc.MultiTenantStores.Domain;
+@@ -10,6 +14,14 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+     public interface IStoreDomainMappingService
+     {
+         Task<StoreDomainMapping> GetByHostNameAsync(string hostName);
++
++        /// <summary>
++        /// بررسی اینکه آیا hostName (فعال یا غیرفعال) قبلاً به فروشگاهی اختصاص داده شده — برخلاف
++        /// <see cref="GetByHostNameAsync"/> که فقط نگاشت‌های فعال را می‌بیند؛ این برای جلوگیری از
++        /// Provision مجدد یک زیردامنهٔ در انتظار پرداخت لازم است.
++        /// </summary>
++        Task<bool> HostNameExistsAsync(string hostName);
++
+         Task<IList<StoreDomainMapping>> GetMappingsByStoreIdAsync(int storeId);
+         Task<IList<StoreDomainMapping>> GetAllMappingsAsync();
+         Task InsertMappingAsync(StoreDomainMapping mapping);
+@@ -44,6 +56,20 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+                 .FirstOrDefaultAsync();
+         }
+ 
++        public async Task<bool> HostNameExistsAsync(string hostName)
++        {
++            if (string.IsNullOrWhiteSpace(hostName))
++                return false;
++
++            var cleanHost = hostName.Trim().ToLowerInvariant();
++            if (cleanHost.Contains(":"))
++                cleanHost = cleanHost.Split(':')[0];
++
++            var matches = await _mappingRepository.GetAllAsync(q =>
++                q.Where(m => m.HostName.ToLower() == cleanHost));
++            return matches.Any();
++        }
++
+         public async Task<IList<StoreDomainMapping>> GetMappingsByStoreIdAsync(int storeId)
+         {
+             return await _mappingRepository.GetAllAsync(query =>
+@@ -94,20 +120,219 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             }
+         }
+ 
++        /// <summary>
++        /// بررسی واقعی رکورد CNAME دامنه از طریق یک کوئری DNS (QTYPE=CNAME) به سرور DNS سیستم —
++        /// نسخهٔ قبلی فقط چک می‌کرد دامنه اصلاً resolve می‌شود (هر دامنهٔ زنده‌ای، حتی با CNAME
++        /// اشتباه، «تایید» می‌شد). حالا مقدار CNAME باید دقیقاً برابر target مورد انتظار باشد.
++        /// </summary>
+         public async Task<bool> VerifyCustomDomainCnameAsync(string domainName, string expectedTargetCname)
+         {
+-            if (string.IsNullOrWhiteSpace(domainName)) return false;
++            if (string.IsNullOrWhiteSpace(domainName) || string.IsNullOrWhiteSpace(expectedTargetCname))
++                return false;
++
++            var normalizedDomain = domainName.Trim().TrimEnd('.').ToLowerInvariant();
++            var normalizedTarget = expectedTargetCname.Trim().TrimEnd('.').ToLowerInvariant();
++
++            var actualCname = await ResolveCnameAsync(normalizedDomain);
++            if (string.IsNullOrEmpty(actualCname))
++                return false;
++
++            return string.Equals(actualCname.TrimEnd('.').ToLowerInvariant(), normalizedTarget, StringComparison.Ordinal);
++        }
++
++        // ────────────────────────── کوئری DNS دستی (CNAME) ──────────────────────────
++        // دات‌نت API آماده‌ای برای خواندن رکورد CNAME در معرض نمی‌گذارد (Dns.GetHostEntry فقط
++        // آدرس IP برمی‌گرداند و aliases قابل‌اتکا نیست)؛ پس یک کوئری UDP سادهٔ DNS (QTYPE=5)
++        // به سرور DNS سیستم ارسال و پاسخش پارس می‌شود.
++
++        private static async Task<string> ResolveCnameAsync(string domain)
++        {
++            var queryId = (ushort)System.Security.Cryptography.RandomNumberGenerator.GetInt32(0, 65536);
++            var dnsServers = GetDnsServers();
++
++            foreach (var server in dnsServers)
++            {
++                try
++                {
++                    using var client = new UdpClient();
++                    var endpoint = new IPEndPoint(IPAddress.Parse(server), 53);
++
++                    var queryBytes = BuildCnameQuery(queryId, domain);
++                    await client.SendAsync(queryBytes, queryBytes.Length, endpoint);
++
++                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
++                    var response = await client.ReceiveAsync(cts.Token);
++
++                    var target = ParseCnameResponse(response.Buffer, queryId, domain);
++                    if (target != null)
++                        return target;
++                }
++                catch
++                {
++                    // این سرور DNS در دسترس نبود — سرور بعدی را امتحان کن
++                }
++            }
++
++            return null;
++        }
+ 
++        private static List<string> GetDnsServers()
++        {
++            var servers = new List<string>();
+             try
+             {
+-                // بررسی رکورد DNS CNAME
+-                var hostEntry = await System.Net.Dns.GetHostEntryAsync(domainName);
+-                return hostEntry != null && hostEntry.AddressList.Length > 0;
++                if (File.Exists("/etc/resolv.conf"))
++                {
++                    foreach (var line in File.ReadAllLines("/etc/resolv.conf"))
++                    {
++                        var trimmed = line.Trim();
++                        if (trimmed.StartsWith("nameserver", StringComparison.Ordinal))
++                        {
++                            var parts = trimmed.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
++                            if (parts.Length >= 2 && IPAddress.TryParse(parts[1].Trim(), out _))
++                                servers.Add(parts[1].Trim());
++                        }
++                    }
++                }
+             }
+             catch
+             {
+-                return false;
++                // بی‌صدا رد شو و از fallback استفاده کن
++            }
++
++            if (servers.Count == 0)
++            {
++                servers.Add("8.8.8.8");
++                servers.Add("1.1.1.1");
++            }
++
++            return servers;
++        }
++
++        private static byte[] BuildCnameQuery(ushort id, string domain)
++        {
++            using var ms = new MemoryStream();
++            WriteUInt16(ms, id);
++            WriteUInt16(ms, 0x0100); // Flags: RD=1
++            WriteUInt16(ms, 1);      // QDCOUNT
++            WriteUInt16(ms, 0);      // ANCOUNT
++            WriteUInt16(ms, 0);      // NSCOUNT
++            WriteUInt16(ms, 0);      // ARCOUNT
++
++            foreach (var label in domain.Split('.'))
++            {
++                var labelBytes = Encoding.ASCII.GetBytes(label);
++                ms.WriteByte((byte)labelBytes.Length);
++                ms.Write(labelBytes, 0, labelBytes.Length);
++            }
++            ms.WriteByte(0); // انتهای نام
++
++            WriteUInt16(ms, 5); // QTYPE = CNAME
++            WriteUInt16(ms, 1); // QCLASS = IN
++            return ms.ToArray();
++        }
++
++        private static string ParseCnameResponse(byte[] data, ushort expectedId, string questionDomain)
++        {
++            if (data == null || data.Length < 12)
++                return null;
++
++            var id = (ushort)((data[0] << 8) | data[1]);
++            if (id != expectedId)
++                return null;
++
++            var flags = (ushort)((data[2] << 8) | data[3]);
++            if ((flags & 0x8000) == 0) return null;   // QR باید ۱ باشد
++            if ((flags & 0x000F) != 0) return null;   // RCODE != 0 (خطای DNS)
++
++            var qdCount = (ushort)((data[4] << 8) | data[5]);
++            var anCount = (ushort)((data[6] << 8) | data[7]);
++
++            var offset = 12;
++            for (var i = 0; i < qdCount; i++)
++            {
++                var qName = ReadDnsName(data, ref offset);
++                if (qName == null) return null;
++                offset += 4; // QTYPE + QCLASS
++            }
++
++            for (var i = 0; i < anCount; i++)
++            {
++                var name = ReadDnsName(data, ref offset);
++                if (name == null) return null;
++                if (offset + 10 > data.Length) return null;
++
++                var type = (ushort)((data[offset] << 8) | data[offset + 1]);
++                var rdataLength = (ushort)((data[offset + 8] << 8) | data[offset + 9]);
++                offset += 10;
++
++                if (type == 5 && string.Equals(name, questionDomain, StringComparison.OrdinalIgnoreCase))
++                {
++                    return ReadDnsName(data, ref offset);
++                }
++
++                offset += rdataLength;
+             }
++
++            return null;
++        }
++
++        /// <summary>خواندن نام DNS با پشتیبانی از اشاره‌گرهای فشرده‌سازی (C0 XX) و محافظت در برابر حلقه.</summary>
++        private static string ReadDnsName(byte[] data, ref int offset)
++        {
++            var sb = new StringBuilder();
++            var visited = new HashSet<int>();
++            var jumped = false;
++            var cursor = offset;
++
++            while (true)
++            {
++                if (cursor >= data.Length)
++                    return null;
++                if (!visited.Add(cursor))
++                    return null; // حلقهٔ اشاره‌گر — پاسخ خراب
++
++                var lengthByte = data[cursor];
++
++                if (lengthByte == 0)
++                {
++                    if (!jumped)
++                        offset = cursor + 1;
++                    break;
++                }
++
++                if ((lengthByte & 0xC0) == 0xC0)
++                {
++                    if (cursor + 1 >= data.Length)
++                        return null;
++                    var pointer = ((lengthByte & 0x3F) << 8) | data[cursor + 1];
++                    if (!jumped)
++                        offset = cursor + 2;
++                    cursor = pointer;
++                    jumped = true;
++                    continue;
++                }
++
++                if ((lengthByte & 0xC0) != 0)
++                    return null; // نوع label ناشناخته
++
++                cursor++;
++                if (cursor + lengthByte > data.Length)
++                    return null;
++
++                if (sb.Length > 0)
++                    sb.Append('.');
++                sb.Append(Encoding.ASCII.GetString(data, cursor, lengthByte));
++                cursor += lengthByte;
++            }
++
++            return sb.Length == 0 ? null : sb.ToString();
++        }
++
++        private static void WriteUInt16(MemoryStream ms, ushort value)
++        {
++            ms.WriteByte((byte)(value >> 8));
++            ms.WriteByte((byte)(value & 0xFF));
+         }
+     }
+ }
+\ No newline at end of file
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantPlanService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantPlanService.cs
+index 46fd9e2..df0a787 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantPlanService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantPlanService.cs
+@@ -30,6 +30,24 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+         /// </summary>
+         Task<TenantPlan> GetActivePlanForStoreAsync(int storeId);
+         Task<int> CreateSubscriptionOrderAsync(int storeId, int customerId, int planId, BillingCycle billingCycle);
++
++        /// <summary>آخرین اشتراک یک مشتری برای یک پلن مشخص — برای جلوگیری از Provision مجدد در هنگام تایید پرداخت.</summary>
++        Task<TenantStoreSubscription> GetSubscriptionByOwnerAndPlanAsync(int customerId, int planId);
++
++        /// <summary>
++        /// فعال‌سازی اشتراک موجود یک فروشگاه (PendingPayment/Trial → Active) + فعال‌سازی دسترسی
++        /// فروشگاه (نگاشت دامنه). در صورت نبود اشتراک، false برمی‌گرداند.
++        /// </summary>
++        Task<bool> ActivateSubscriptionAsync(int storeId);
++
++        /// <summary>
++        /// تضمین وجود اشتراک Active برای فروشگاه: اگر اشتراکی نباشد می‌سازد، اگر باشد (غیرفعال)
++        /// فعالش می‌کند — برای مسیر «خرید پلن مستقیم از سایت مادر» که فروشگاه و اشتراک باید پس از
++        /// پرداخت ساخته شوند. <paramref name="durationDays"/> فقط هنگام ساخت اشتراکِ جدید استفاده
++        /// می‌شود (چرخهٔ صورتحساب؛ پیش‌فرض ۳۰ روز).
++        /// </summary>
++        Task<bool> EnsureSubscriptionActiveAsync(int storeId, int customerId, int planId, int? durationDays = null);
++
+         Task<IList<TenantStoreSubscription>> GetSubscriptionsExpiringInDaysAsync(int days);
+         Task<IList<TenantStoreSubscription>> GetExpiredSubscriptionsAsync();
+         Task SendExpiryWarningNotificationAsync(int storeId, int daysRemaining);
+@@ -47,6 +65,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+         private readonly IQueuedEmailService _queuedEmailService;
+         private readonly IEmailAccountService _emailAccountService;
+         private readonly EmailAccountSettings _emailAccountSettings;
++        private readonly ITenantProvisioningService _tenantProvisioningService;
+ 
+         public TenantPlanService(
+             IRepository<TenantPlan> planRepository,
+@@ -56,7 +75,8 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             ICustomerService customerService,
+             IQueuedEmailService queuedEmailService,
+             IEmailAccountService emailAccountService,
+-            EmailAccountSettings emailAccountSettings)
++            EmailAccountSettings emailAccountSettings,
++            ITenantProvisioningService tenantProvisioningService)
+         {
+             _planRepository = planRepository;
+             _subscriptionRepository = subscriptionRepository;
+@@ -66,6 +86,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             _queuedEmailService = queuedEmailService;
+             _emailAccountService = emailAccountService;
+             _emailAccountSettings = emailAccountSettings;
++            _tenantProvisioningService = tenantProvisioningService;
+         }
+ 
+         public async Task<IList<TenantPlan>> GetAllActivePlansAsync()
+@@ -102,6 +123,8 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+ 
+             return isUsable ? await GetPlanByIdAsync(subscription.TenantPlanId) : null;
+         }
++
++        public async Task InsertPlanAsync(TenantPlan plan)
+         {
+             await _planRepository.InsertAsync(plan);
+         }
+@@ -226,6 +249,77 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             return order.Id;
+         }
+ 
++        public async Task<TenantStoreSubscription> GetSubscriptionByOwnerAndPlanAsync(int customerId, int planId)
++        {
++            var all = await _subscriptionRepository.GetAllAsync(q =>
++                q.Where(s => s.OwnerCustomerId == customerId && s.TenantPlanId == planId)
++                 .OrderByDescending(s => s.CreatedOnUtc));
++            return all.FirstOrDefault();
++        }
++
++        /// <summary>
++        /// فعال‌سازی اشتراک موجود یک فروشگاه + فعال‌سازی نگاشت دامنه‌ها (دسترسی واقعی فروشگاه).
++        /// فراخوانی مکرر امن است (Idempotent) — اشتراکی که از قبل Active باشد دست نمی‌خورد.
++        /// </summary>
++        public async Task<bool> ActivateSubscriptionAsync(int storeId)
++        {
++            var subscription = await GetSubscriptionByStoreIdAsync(storeId);
++            if (subscription == null)
++                return false;
++
++            if (subscription.Status != SubscriptionStatus.Active)
++            {
++                subscription.Status = SubscriptionStatus.Active;
++                subscription.UpdatedOnUtc = DateTime.UtcNow;
++                await _subscriptionRepository.UpdateAsync(subscription);
++            }
++
++            // فروشگاه فقط پس از فعال‌شدن اشتراک باید قابل دسترسی باشد (نگاشت دامنهٔ غیرفعال → فعال)
++            await _tenantProvisioningService.ActivateTenantStoreAsync(storeId);
++
++            return true;
++        }
++
++        /// <summary>
++        /// برای مسیر «خرید مستقیم پلن از سایت مادر»: اگر فروشگاهی اشتراک ندارد، یک اشتراک Active
++        /// واقعی می‌سازد؛ اگر دارد و غیرفعال است، فعالش می‌کند. سپس دسترسی فروشگاه را فعال می‌کند.
++        /// </summary>
++        public async Task<bool> EnsureSubscriptionActiveAsync(int storeId, int customerId, int planId, int? durationDays = null)
++        {
++            var plan = await GetPlanByIdAsync(planId);
++            if (plan == null)
++                return false;
++
++            var now = DateTime.UtcNow;
++            var subscription = await GetSubscriptionByStoreIdAsync(storeId);
++
++            if (subscription == null)
++            {
++                await _subscriptionRepository.InsertAsync(new TenantStoreSubscription
++                {
++                    StoreId = storeId,
++                    TenantPlanId = planId,
++                    OwnerCustomerId = customerId,
++                    Status = SubscriptionStatus.Active,
++                    StartDateUtc = now,
++                    NextBillingDateUtc = now.AddDays(durationDays ?? 30),
++                    AutoRenew = true,
++                    CreatedOnUtc = now,
++                    UpdatedOnUtc = now
++                });
++            }
++            else if (subscription.Status != SubscriptionStatus.Active)
++            {
++                subscription.TenantPlanId = planId;
++                subscription.Status = SubscriptionStatus.Active;
++                subscription.UpdatedOnUtc = now;
++                await _subscriptionRepository.UpdateAsync(subscription);
++            }
++
++            await _tenantProvisioningService.ActivateTenantStoreAsync(storeId);
++            return true;
++        }
++
+         public async Task<IList<TenantStoreSubscription>> GetSubscriptionsExpiringInDaysAsync(int days)
+         {
+             var threshold = DateTime.UtcNow.AddDays(days);
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantProvisioningService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantProvisioningService.cs
+index 6a3ef7a..a3b9106 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantProvisioningService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantProvisioningService.cs
+@@ -4,6 +4,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+     using System.Threading.Tasks;
+     using Nop.Core.Domain.Customers;
+     using Nop.Core.Domain.Stores;
++    using Nop.Data;
+     using Nop.Services.Customers;
+     using Nop.Services.Common;
+     using Nop.Services.Stores;
+@@ -24,19 +25,22 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+         private readonly Nop.Services.Customers.ICustomerRegistrationService _customerRegistrationService;
+         private readonly IGenericAttributeService _genericAttributeService;
+         private readonly IStoreDomainMappingService _domainMappingService;
++        private readonly IRepository<TenantPlan> _planRepository;
+ 
+         public TenantProvisioningService(
+             IStoreService storeService,
+             ICustomerService customerService,
+             Nop.Services.Customers.ICustomerRegistrationService customerRegistrationService,
+             IGenericAttributeService genericAttributeService,
+-            IStoreDomainMappingService domainMappingService)
++            IStoreDomainMappingService domainMappingService,
++            IRepository<TenantPlan> planRepository)
+         {
+             _storeService = storeService;
+             _customerService = customerService;
+             _customerRegistrationService = customerRegistrationService;
+             _genericAttributeService = genericAttributeService;
+             _domainMappingService = domainMappingService;
++            _planRepository = planRepository;
+         }
+ 
+         public async Task<bool> ValidateSubdomainAvailabilityAsync(string subdomain)
+@@ -50,8 +54,13 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+                 return false;
+ 
+             var fullHost = $"{cleanSubdomain}.market.com";
+-            var existing = await _domainMappingService.GetByHostNameAsync(fullHost);
+-            return existing == null;
++
++            // ⚠️ مهم: باید هر نگاشتِ موجود را ببیند، حتی غیرفعال‌ها — نگاشت فروشگاه در انتظار پرداخت
++            // عمداً IsActive=false است و GetByHostNameAsync فقط نگاشت‌های فعال را می‌بیند؛ اگر این‌جا
++            // فقط از آن استفاده می‌شد، پرداخت دوباره/Consumer می‌توانست یک فروشگاه تکراری روی همان
++            // زیردامنه بسازد.
++            var exists = await _domainMappingService.HostNameExistsAsync(fullHost);
++            return !exists;
+         }
+ 
+         /// <summary>
+@@ -89,12 +98,22 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             await _storeService.InsertStoreAsync(store);
+ 
+             // ۲. ثبت نگاشت اولیه دامنه
++            // ⚠️ گیت فعال‌سازی: پلن آزمایشی همان لحظه فعال می‌شود؛ پلن پولی فقط پس از تایید واقعی
++            // پرداخت (ActivateTenantStoreAsync از مسیر Verify/Consumer) — تا مشتری قبل از پرداخت
++            // به فروشگاه دسترسی پیدا نکند.
++            var isTrialPlan = false;
++            if (request.PlanId > 0)
++            {
++                var plan = await _planRepository.GetByIdAsync(request.PlanId);
++                isTrialPlan = plan != null && plan.TrialDurationDays > 0;
++            }
++
+             var domainMapping = new StoreDomainMapping
+             {
+                 StoreId = store.Id,
+                 HostName = fullHost,
+                 IsPrimaryDomain = true,
+-                IsActive = true,
++                IsActive = isTrialPlan,
+                 IsSslVerified = true,
+                 CreatedOnUtc = DateTime.UtcNow
+             };
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/WalletService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/WalletService.cs
+index c8a99e1..35a8460 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/WalletService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/WalletService.cs
+@@ -107,15 +107,32 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             if (balance < amountToman)
+                 return (false, balance, "موجودی کیف‌پول کافی نیست.");
+ 
+-            await _ledgerRepository.InsertAsync(new WalletLedger
++            try
+             {
+-                CustomerId = customerId,
+-                StoreId = storeId,
+-                AmountToman = -amountToman,
+-                Reason = reason,
+-                ReferenceCode = referenceCode,
+-                CreatedOnUtc = DateTime.UtcNow
+-            });
++                await _ledgerRepository.InsertAsync(new WalletLedger
++                {
++                    CustomerId = customerId,
++                    StoreId = storeId,
++                    AmountToman = -amountToman,
++                    Reason = reason,
++                    ReferenceCode = referenceCode,
++                    CreatedOnUtc = DateTime.UtcNow
++                });
++            }
++            catch (Exception)
++            {
++                // مسابقهٔ هم‌زمان (کلیک دوبل/Retry هم‌زمان): رکورد با همین ReferenceCode توسط درخواست
++                // دیگری ثبت شده و Unique Index «IX_WalletLedger_DebitIdempotency» درج را رد کرده است.
++                // در این حالت کسر دوم نباید اتفاق بیفتد — همان نتیجهٔ موفقِ درخواست اول برگردانده می‌شود.
++                var concurrentDuplicate = await _ledgerRepository.GetAllAsync(q =>
++                    q.Where(e => e.CustomerId == customerId && e.StoreId == storeId
++                        && e.Reason == reason && e.ReferenceCode == referenceCode));
++
++                if (concurrentDuplicate.Any())
++                    return (true, await GetBalanceAsync(customerId, storeId), null);
++
++                throw;
++            }
+ 
+             var newBalance = await GetBalanceAsync(customerId, storeId);
+             return (true, newBalance, null);
+-- 
+2.39.5
+
