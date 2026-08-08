@@ -1,0 +1,133 @@
+From 9b322ee4aa1ae6a2bfb9d203c8df5eade88f2d09 Mon Sep 17 00:00:00 2001
+From: arena-ai-coding-agent <arena-ai-coding-agent@users.noreply.github.com>
+Date: Sat, 8 Aug 2026 08:36:37 +0000
+Subject: [PATCH] =?UTF-8?q?feat:=20=D9=81=D8=A7=D8=B2=204=20=E2=80=94=20?=
+ =?UTF-8?q?=D8=B1=D8=A7=D9=87=D9=86=D9=85=D8=A7=DB=8C=20=DA=AF=D8=A7=D9=85?=
+ =?UTF-8?q?=E2=80=8C=D8=A8=D9=87=E2=80=8C=DA=AF=D8=A7=D9=85=20Manus/ManyCh?=
+ =?UTF-8?q?at/=D8=A7=DB=8C=D9=86=D9=81=D9=84=D9=88=D8=A6=D9=86=D8=B3=D8=B1?=
+ =?UTF-8?q?=20=D8=AF=D8=B1=20=DA=86=DA=A9=E2=80=8C=D9=84=DB=8C=D8=B3=D8=AA?=
+ =?UTF-8?q?=20(=D8=A7=D8=B1=D8=B2=D8=B4=20=D8=A7=D9=81=D8=B2=D9=88=D8=AF?=
+ =?UTF-8?q?=D9=87)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- آیتم جدید «manus» در چک‌لیست (اتصال کانکتور اینستاگرام Manus — ارزش افزودهٔ اختیاری)
+- فیلد GuideSteps به LaunchChecklistItemDto اضافه شد
+- آیتم‌های manus/manychat/influencer با مراحل گام‌به‌گام کامل پر شدند (شامل هزینه و نکات)
+- ویو: نمایش «📖 راهنمای گام‌به‌گام» به‌صورت <details> برای هر آیتم دارای مراحل
+---
+ .../Services/LaunchChecklistService.cs        | 45 +++++++++++++++++--
+ .../Components/LaunchChecklist/Default.cshtml | 14 ++++++
+ 2 files changed, 56 insertions(+), 3 deletions(-)
+
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+index 6b16eff..b1470ce 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+@@ -28,6 +28,9 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+         public string GuideUrl { get; set; }
+         public string IconEmoji { get; set; }
+ 
++        /// <summary>مراحل گام‌به‌گام راهنما (اختیاری — داخل خود چک‌لیست نمایش داده می‌شود).</summary>
++        public IList<string> GuideSteps { get; set; }
++
+         /// <summary>آیا وضعیت این آیتم خودکار تشخیص داده می‌شود یا دستی؟</summary>
+         public bool IsAutoDetected { get; set; }
+ 
+@@ -140,16 +143,51 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             new()
+             {
+                 ItemKey = "influencer", Title = "ساخت اینفلوئنسر اختصاصی برند",
+-                Description = "طراحی چهرهٔ کاراکتر برند + تثبیت چهره و صدا با Google Flow و ساخت ویدیوهای تبلیغاتی اختصاصی.",
++                Description = "ارزش افزودهٔ اختیاری: طراحی چهرهٔ کاراکتر برند + تثبیت چهره و صدا با Google Flow و ساخت ویدیوهای تبلیغاتی اختصاصی.",
+                 GuideUrl = "https://flow.google.com", IconEmoji = "🎬", IsAutoDetected = false,
+-                AutoStatusLabel = null
++                AutoStatusLabel = null,
++                GuideSteps = new List<string>
++                {
++                    "قدم اول (ساخت کاراکتر): یک چهرهٔ پایه که به برندتان بخورد طراحی کنید (با هوش مصنوعی) یا از پینترست پیدا کنید.",
++                    "قدم دوم (تثبیت چهره): عکس را وارد ابزار Google Flow کنید و با یک پرامپت ساده، کاراکتر شیت (نماهای مختلف) بسازید تا چهره‌اش برای همیشه ثابت بماند؛ سپس صدای کاراکتر را انتخاب کنید.",
++                    "قدم سوم (ورود به دفتر کار شما): عکس محیط کار و لوگوی برندتان را آپلود کنید و با ترکیبش با کاراکتر اختصاصی، یک ویدیوی تبلیغاتی فوق‌العاده بسازید.",
++                    "ویدیوی نهایی را در اینستاگرام/ریلز منتشر کنید (دستی یا با کانکتور Manus).",
++                    "هزینه: اشتراک Google/Flow (ممکن است برخی امکانات صدا نیاز به پلن Ultra داشته باشد) — بر عهدهٔ فروشنده."
++                }
++            },
++            new()
++            {
++                ItemKey = "manus", Title = "اتصال Manus (تولید و انتشار محتوای هوشمند)",
++                Description = "ارزش افزودهٔ اختیاری: با کانکتور اینستاگرام Manus، تصاویر/ریلز/کاروسل بسازید و مستقیم روی پیج منتشر کنید.",
++                GuideUrl = "https://manus.im", IconEmoji = "🤖", IsAutoDetected = false,
++                AutoStatusLabel = null,
++                GuideSteps = new List<string>
++                {
++                    "در manus.im حساب بسازید و وارد شوید.",
++                    "از تب Connectors، «Instagram» را انتخاب و با پیج تجاری/کریتور فروشگاه وصل کنید (OAuth).",
++                    "یک Task بنویسید، مثلاً: «تصویر محصول X را با کپشن و هشتگ مناسب به‌صورت پست در اینستاگرام منتشر کن» — Manus انتشار را انجام می‌دهد.",
++                    "برای تولید محتوا: «یک ریلز/کاروسل ۵ ثانیه‌ای برای محصول X بساز و منتشر کن» یا «یک گرید ۹تایی برای برندم بساز».",
++                    "تحلیل: «آمار تعاملات (views/reach/likes/comments/saves) را بگیر و پیشنهاد استراتژی بده».",
++                    "نکته: انتشار با کانکتور Manus بتاست؛ برای اتوماسیون قطعیِ رویدادمحور (مثل انتشار خودکار هنگام ثبت محصول)، دستیار اینستاگرام خودِ پلتفرم (Graph API) کار می‌کند.",
++                    "هزینه: اشتراک Manus — بر عهدهٔ فروشنده."
++                }
+             },
+             new()
+             {
+                 ItemKey = "manychat", Title = "قیف کامنت → دایرکت با ManyChat",
+                 Description = "ارزش افزودهٔ اختیاری: راه‌اندازی قیف «کامنت کن تا لینک بفرستم» با ManyChat (نیازمند پلن Pro و اتصال به پیج اینستاگرام).",
+                 GuideUrl = "https://manychat.com", IconEmoji = "💬", IsAutoDetected = false,
+-                AutoStatusLabel = null
++                AutoStatusLabel = null,
++                GuideSteps = new List<string>
++                {
++                    "در manychat.com ثبت‌نام کنید و پیج اینستاگرام (Business/Creator) را متصل کنید.",
++                    "پلن Pro یا بالاتر فعال کنید (برای دسترسی کامل به API و اتصال‌ها؛ حدود ۱۵ دلار به بالا در ماه).",
++                    "یک Flow جدید «Comment → DM» بسازید و تریگر را روی «کامنت شامل کلمهٔ کلیدی» تنظیم کنید.",
++                    "پیام دایرکت خودکار را تنظیم کنید (لینک، کد تخفیف یا متن دلخواه).",
++                    "برای اتصال به بک‌اند IGBZ (پردازش SKU/کیف‌پول/کد تخفیف): در فلوی ManyChat یک اکشن «HTTP Request» به آدرس وب‌هوک خودتان اضافه کنید.",
++                    "در ریلزها بگویید: «کلمهٔ «رشد» را کامنت کن تا لینک رو بفرستم».",
++                    "هزینه: اشتراک ManyChat (بر اساس تعداد مخاطب فعال) — بر عهدهٔ فروشنده."
++                }
+             }
+         };
+ 
+@@ -175,6 +213,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+                     Description = item.Description,
+                     GuideUrl = item.GuideUrl,
+                     IconEmoji = item.IconEmoji,
++                    GuideSteps = item.GuideSteps,
+                     IsAutoDetected = item.IsAutoDetected,
+                     AutoStatusLabel = item.AutoStatusLabel,
+                     Status = LaunchChecklistStatus.Pending
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml
+index ce81af9..bca50c6 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml
+@@ -1,4 +1,5 @@
+ @model Nop.Plugin.Misc.MultiTenantStores.Components.LaunchChecklistModel
++@using System.Linq
+ 
+ @{
+     var markDoneUrl = Url.Action("MarkDone", "LaunchChecklist", new { area = "Admin" });
+@@ -39,6 +40,19 @@
+                             @item.AutoStatusLabel
+                         </span>
+                     }
++
++                    @if (item.GuideSteps != null && item.GuideSteps.Count > 0)
++                    {
++                        <details class="mt-1">
++                            <summary class="small text-info" style="cursor:pointer;">📖 راهنمای گام‌به‌گام</summary>
++                            <ol class="small mt-2 mb-0" style="padding-inline-start: 1.2rem;">
++                                @foreach (var step in item.GuideSteps)
++                                {
++                                    <li class="mb-1">@step</li>
++                                }
++                            </ol>
++                        </details>
++                    }
+                 </div>
+ 
+                 <div class="col-md-4 text-left">
+-- 
+2.39.5
+
