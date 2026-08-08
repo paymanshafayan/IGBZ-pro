@@ -18,7 +18,7 @@ public class PaymentServiceTests
         var gateway = new FakePaymentGateway("fake");
         var credentials = new FakeCredentialRepository(_tenantContext);
         credentials.AddActiveCredential("fake", "test-api-key");
-        var service = new PaymentService(ledger, credentials, new[] { gateway });
+        var service = new PaymentService(ledger, credentials, FakeEncryptionService.Instance, new[] { gateway });
         return (service, ledger, gateway);
     }
 

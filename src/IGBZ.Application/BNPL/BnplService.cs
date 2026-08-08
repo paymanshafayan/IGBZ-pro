@@ -31,13 +31,16 @@ public interface IBnplService
 public class BnplService : IBnplService
 {
     private readonly ITenantScopedRepository<IntegrationCredential> _credentialRepository;
+    private readonly IEncryptionService _encryptionService;
     private readonly IReadOnlyDictionary<string, IBnplGateway> _gateways;
 
     public BnplService(
         ITenantScopedRepository<IntegrationCredential> credentialRepository,
+        IEncryptionService encryptionService,
         IEnumerable<IBnplGateway> gateways)
     {
         _credentialRepository = credentialRepository;
+        _encryptionService = encryptionService;
         _gateways = gateways.ToDictionary(g => g.ProviderKey, g => g, StringComparer.OrdinalIgnoreCase);
     }
 
@@ -45,7 +48,7 @@ public class BnplService : IBnplService
     {
         var credential = await _credentialRepository.FirstOrDefaultAsync(
             c => c.ProviderKey == providerKey && c.IsActive, cancellationToken);
-        return credential?.ApiKeyEncrypted;
+        return credential == null ? null : _encryptionService.Decrypt(credential.ApiKeyEncrypted ?? string.Empty);
     }
 
     public async Task<BnplEligibilityResult> CheckEligibilityAsync(

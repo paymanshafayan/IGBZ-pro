@@ -34,7 +34,7 @@ public class TenantProvisioningServiceTests
             TrialDurationDays = withPaidPlan ? 0 : 7
         });
 
-        var authService = new AuthService(customers, new FakeJwtTokenService());
+        var authService = new AuthService(customers, new FakeJwtTokenService(), new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()));
         var service = new TenantProvisioningService(tenants, plans, subscriptions, _tenantContext, authService);
 
         return (service, tenants, plans, subscriptions, customers);

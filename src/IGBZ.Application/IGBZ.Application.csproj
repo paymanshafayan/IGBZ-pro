@@ -9,5 +9,7 @@
   <ItemGroup>
     <!-- DI Abstraction برای ثبت سرویس‌ها -->
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
+    <!-- IMemoryCache برای قفل تلاش لاگین و … -->
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.0" />
   </ItemGroup>
 </Project>

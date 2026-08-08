@@ -39,7 +39,7 @@ public class TenantSubscriptionServiceTests
         var gateway = new FakePaymentGateway("test");
         var credentials = new FakeCredentialRepository(_tenantContext);
         credentials.AddActiveCredential("test", "test-api-key");
-        var paymentService = new PaymentService(ledger, credentials, new[] { gateway });
+        var paymentService = new PaymentService(ledger, credentials, FakeEncryptionService.Instance, new[] { gateway });
 
         var service = new TenantSubscriptionService(subscriptions, plans, tenants, paymentService);
         return (service, subscriptions, tenants, ledger);

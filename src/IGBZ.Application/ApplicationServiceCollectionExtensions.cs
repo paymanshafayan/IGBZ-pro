@@ -23,6 +23,9 @@ public static class ApplicationServiceCollectionExtensions
 {
     public static IServiceCollection AddIgBzApplication(this IServiceCollection services)
     {
+        // حافظهٔ کش (برای قفل تلاش لاگین و …)
+        services.AddMemoryCache();
+
         // قیمت‌گذاری — ترتیب calculators مهم است (SubTotal ← Discount ← Tax ← Shipping)
         services.AddScoped<IPricingCalculator, SubtotalCalculator>();
         services.AddScoped<IPricingCalculator, DiscountCalculator>();

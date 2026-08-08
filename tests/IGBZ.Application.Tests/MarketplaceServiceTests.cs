@@ -15,7 +15,7 @@ public class MarketplaceServiceTests
         _tenantContext.Set("t1");
         var products = new FakeProductInventoryRepository(_tenantContext);
         var credentials = new FakeCredentialRepository(_tenantContext);
-        var service = new MarketplaceService(products, credentials, new FakeHttpClientFactory());
+        var service = new MarketplaceService(products, credentials, FakeEncryptionService.Instance, new FakeHttpClientFactory());
         return (service, products, credentials);
     }
 

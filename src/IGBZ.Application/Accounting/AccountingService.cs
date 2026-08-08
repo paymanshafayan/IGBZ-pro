@@ -10,15 +10,18 @@ public class AccountingService : IAccountingService
 
     private readonly ITenantScopedRepository<Invoice> _invoiceRepository;
     private readonly ITenantScopedRepository<IntegrationCredential> _credentialRepository;
+    private readonly IEncryptionService _encryptionService;
     private readonly ITaxProvider _taxProvider;
 
     public AccountingService(
         ITenantScopedRepository<Invoice> invoiceRepository,
         ITenantScopedRepository<IntegrationCredential> credentialRepository,
+        IEncryptionService encryptionService,
         ITaxProvider taxProvider)
     {
         _invoiceRepository = invoiceRepository;
         _credentialRepository = credentialRepository;
+        _encryptionService = encryptionService;
         _taxProvider = taxProvider;
     }
 
@@ -54,7 +57,7 @@ public class AccountingService : IAccountingService
                 AmountToman = request.SubTotalToman,
                 TaxToman = request.TaxToman,
                 IssueDateUtc = invoice.IssuedOnUtc
-            }, credential.ApiKeyEncrypted ?? string.Empty, cancellationToken);
+            }, _encryptionService.Decrypt(credential.ApiKeyEncrypted ?? string.Empty) ?? string.Empty, cancellationToken);
 
             if (taxResult.IsSuccess)
             {

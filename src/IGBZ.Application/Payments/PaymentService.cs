@@ -10,24 +10,27 @@ public class PaymentService : IPaymentService
 {
     private readonly ITenantScopedRepository<PaymentTransactionLedger> _ledgerRepository;
     private readonly ITenantScopedRepository<IntegrationCredential> _credentialRepository;
+    private readonly IEncryptionService _encryptionService;
     private readonly IReadOnlyDictionary<string, IPaymentGateway> _gateways;
 
     public PaymentService(
         ITenantScopedRepository<PaymentTransactionLedger> ledgerRepository,
         ITenantScopedRepository<IntegrationCredential> credentialRepository,
+        IEncryptionService encryptionService,
         IEnumerable<IPaymentGateway> gateways)
     {
         _ledgerRepository = ledgerRepository;
         _credentialRepository = credentialRepository;
+        _encryptionService = encryptionService;
         _gateways = gateways.ToDictionary(g => g.GatewayName, g => g, StringComparer.OrdinalIgnoreCase);
     }
 
-    /// <summary>خواندن کلید API فعال درگاه برای تننت جاری (از اعتبارنامه).</summary>
+    /// <summary>خواندن کلید API فعال درگاه برای تننت جاری — رمزگشایی AES (سند بخش ۱۶).</summary>
     private async Task<string?> GetGatewayApiKeyAsync(string gatewayName, CancellationToken cancellationToken)
     {
         var credential = await _credentialRepository.FirstOrDefaultAsync(
             c => c.ProviderKey == gatewayName && c.IsActive, cancellationToken);
-        return credential?.ApiKeyEncrypted; // در فاز کامل: رمزگشایی AES
+        return credential == null ? null : _encryptionService.Decrypt(credential.ApiKeyEncrypted ?? string.Empty);
     }
 
     public async Task<PaymentRequestResult> RequestAsync(

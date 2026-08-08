@@ -14,6 +14,7 @@ using IGBZ.Infrastructure.Gateways;
 using IGBZ.Infrastructure.Lms;
 using IGBZ.Infrastructure.Mongo;
 using IGBZ.Infrastructure.Repositories;
+using IGBZ.Infrastructure.Security;
 using Microsoft.Extensions.DependencyInjection;
 
 /// <summary>ثبت سرویس‌های زیرساخت در DI.</summary>
@@ -28,6 +29,14 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<MongoDbContext>();
 
         services.AddScoped<ITenantContext, TenantContext>();
+
+        // رمزنگاری کلیدهای حساس (AES-GCM) — کلید از تنظیمات/راز محیطی
+        services.AddSingleton<IEncryptionService>(sp =>
+        {
+            var config = sp.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
+            var key = config["Security:EncryptionKey"];
+            return new EncryptionService(key ?? string.Empty);
+        });
 
         // JWT — اگر تنظیمات داده شده باشد
         if (jwtOptions != null)

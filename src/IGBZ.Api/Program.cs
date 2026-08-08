@@ -6,6 +6,7 @@ using IGBZ.Infrastructure.Auth;
 using IGBZ.Infrastructure.Mongo;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.Caching.Memory;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -54,6 +55,10 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddControllers();
 
 var app = builder.Build();
+
+// Rate Limiting (سند بخش ۱۶): per-IP + per-tenant
+var rateLimit = int.TryParse(builder.Configuration["RateLimiting:RequestsPerMinute"], out var rl) ? rl : 120;
+app.UseMiddleware<RateLimitingMiddleware>(app.Services.GetRequiredService<IMemoryCache>(), rateLimit);
 
 app.UseMiddleware<TenantResolutionMiddleware>();
 app.UseAuthentication();

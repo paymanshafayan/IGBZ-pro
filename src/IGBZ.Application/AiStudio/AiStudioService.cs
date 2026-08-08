@@ -21,13 +21,16 @@ public class AiStudioService : IAiStudioService
     private const string TranslationProviderKey = "tarjomyar";
 
     private readonly ITenantScopedRepository<IntegrationCredential> _credentialRepository;
+    private readonly IEncryptionService _encryptionService;
     private readonly IHttpClientFactory _httpClientFactory;
 
     public AiStudioService(
         ITenantScopedRepository<IntegrationCredential> credentialRepository,
+        IEncryptionService encryptionService,
         IHttpClientFactory httpClientFactory)
     {
         _credentialRepository = credentialRepository;
+        _encryptionService = encryptionService;
         _httpClientFactory = httpClientFactory;
     }
 
@@ -35,7 +38,9 @@ public class AiStudioService : IAiStudioService
     {
         var credential = await _credentialRepository.FirstOrDefaultAsync(
             c => c.ProviderKey == providerKey && c.IsActive, cancellationToken);
-        return (credential?.ApiKeyEncrypted ?? string.Empty, credential?.EndpointOverrideUrl);
+        if (credential == null)
+            return (string.Empty, null);
+        return (_encryptionService.Decrypt(credential.ApiKeyEncrypted ?? string.Empty) ?? string.Empty, credential.EndpointOverrideUrl);
     }
 
     public async Task<AiStudioResult> EnhancePhotoAsync(EnhancePhotoRequest request, CancellationToken cancellationToken = default)

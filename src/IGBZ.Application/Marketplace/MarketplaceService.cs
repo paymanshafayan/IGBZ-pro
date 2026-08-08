@@ -19,15 +19,18 @@ public class MarketplaceService : IMarketplaceService
 
     private readonly ITenantScopedRepository<Product> _productRepository;
     private readonly ITenantScopedRepository<IntegrationCredential> _credentialRepository;
+    private readonly IEncryptionService _encryptionService;
     private readonly IHttpClientFactory _httpClientFactory;
 
     public MarketplaceService(
         ITenantScopedRepository<Product> productRepository,
         ITenantScopedRepository<IntegrationCredential> credentialRepository,
+        IEncryptionService encryptionService,
         IHttpClientFactory httpClientFactory)
     {
         _productRepository = productRepository;
         _credentialRepository = credentialRepository;
+        _encryptionService = encryptionService;
         _httpClientFactory = httpClientFactory;
     }
 
@@ -35,7 +38,7 @@ public class MarketplaceService : IMarketplaceService
     {
         var credential = await _credentialRepository.FirstOrDefaultAsync(
             c => c.ProviderKey == providerKey && c.IsActive, cancellationToken);
-        return credential?.ApiKeyEncrypted;
+        return credential == null ? null : _encryptionService.Decrypt(credential.ApiKeyEncrypted ?? string.Empty);
     }
 
     // ────────────────────────── ترب (فید) ──────────────────────────

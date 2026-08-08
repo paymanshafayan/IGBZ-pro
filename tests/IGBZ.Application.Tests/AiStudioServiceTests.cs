@@ -15,7 +15,7 @@ public class AiStudioServiceTests
         var credentials = new FakeCredentialRepository(_tenantContext);
         var handler = new FakeHttpMessageHandler();
         var factory = new FakeHttpClientFactoryWithHandler(handler);
-        return (new AiStudioService(credentials, factory), credentials, handler);
+        return (new AiStudioService(credentials, FakeEncryptionService.Instance, factory), credentials, handler);
     }
 
     [Fact]

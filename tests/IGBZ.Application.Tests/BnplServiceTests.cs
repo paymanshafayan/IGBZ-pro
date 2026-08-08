@@ -59,7 +59,7 @@ public class BnplServiceTests
         _tenantContext.Set("t1");
         var credentials = new FakeCredentialRepository(_tenantContext);
         var gateway = new FakeBnplGateway("digipay");
-        var service = new BnplService(credentials, new[] { gateway });
+        var service = new BnplService(credentials, FakeEncryptionService.Instance, new[] { gateway });
         return (service, gateway, credentials);
     }
 

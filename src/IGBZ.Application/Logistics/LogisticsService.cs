@@ -17,13 +17,16 @@ public class LogisticsService : ILogisticsService
     private const string TapinProviderKey = "tapin";
 
     private readonly ITenantScopedRepository<IntegrationCredential> _credentialRepository;
+    private readonly IEncryptionService _encryptionService;
     private readonly IHttpClientFactory _httpClientFactory;
 
     public LogisticsService(
         ITenantScopedRepository<IntegrationCredential> credentialRepository,
+        IEncryptionService encryptionService,
         IHttpClientFactory httpClientFactory)
     {
         _credentialRepository = credentialRepository;
+        _encryptionService = encryptionService;
         _httpClientFactory = httpClientFactory;
     }
 
@@ -135,7 +138,7 @@ public class LogisticsService : ILogisticsService
     {
         var credential = await _credentialRepository.FirstOrDefaultAsync(
             c => c.ProviderKey == TapinProviderKey && c.IsActive, cancellationToken);
-        return credential?.ApiKeyEncrypted;
+        return credential == null ? null : _encryptionService.Decrypt(credential.ApiKeyEncrypted ?? string.Empty);
     }
 
     private static string Truncate(string s, int max = 200) =>

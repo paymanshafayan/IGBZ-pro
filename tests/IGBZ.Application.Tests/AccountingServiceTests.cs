@@ -33,7 +33,7 @@ public class AccountingServiceTests
         var invoices = new FakeTenantScopedRepository<Invoice>(_tenantContext);
         var credentials = new FakeCredentialRepository(_tenantContext);
         var tax = new FakeTaxProvider();
-        return (new AccountingService(invoices, credentials, tax), invoices, credentials, tax);
+        return (new AccountingService(invoices, credentials, FakeEncryptionService.Instance, tax), invoices, credentials, tax);
     }
 
     [Fact]

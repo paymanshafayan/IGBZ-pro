@@ -14,7 +14,7 @@ public class LogisticsServiceTests
         _tenantContext.Set("t1");
         var credentials = new FakeCredentialRepository(_tenantContext);
         // برای تست دسته‌بندی/PIN به HttpClient واقعی نیاز نیست — سرویس را بدون Credential می‌سازیم
-        return new LogisticsService(credentials, new FakeHttpClientFactory());
+        return new LogisticsService(credentials, FakeEncryptionService.Instance, new FakeHttpClientFactory());
     }
 
     [Fact]
