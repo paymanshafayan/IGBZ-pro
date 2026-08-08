@@ -90,6 +90,9 @@ public static class InfrastructureServiceCollectionExtensions
             new ModianTaxProvider(sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient("ModianTax")));
         services.AddHttpClient("ModianTax");
 
+        // Graph API اینستاگرام
+        services.AddHttpClient("InstagramGraphApi");
+
         // Repository های عمومی (باز) + تننت‌محور
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
         services.AddScoped(typeof(ITenantScopedRepository<>), typeof(TenantScopedRepository<>));

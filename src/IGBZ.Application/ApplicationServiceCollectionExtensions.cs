@@ -7,6 +7,7 @@ using IGBZ.Application.Auth;
 using IGBZ.Application.BNPL;
 using IGBZ.Application.Catalog;
 using IGBZ.Application.Discounts;
+using IGBZ.Application.Instagram;
 using IGBZ.Application.Lms;
 using IGBZ.Application.Logistics;
 using IGBZ.Application.Marketplace;
@@ -77,6 +78,9 @@ public static class ApplicationServiceCollectionExtensions
 
         // حسابداری (فاکتور رسمی + مؤدیان)
         services.AddScoped<IAccountingService, AccountingService>();
+
+        // دستیار اینستاگرام
+        services.AddScoped<IInstagramService, InstagramService>();
 
         return services;
     }

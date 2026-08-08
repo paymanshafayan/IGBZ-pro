@@ -30,6 +30,9 @@ builder.Services.AddIgBzInfrastructure(mongoOptions, jwtOptions);
 // ── لایهٔ اپلیکیشن (موتور تجارت) ──
 builder.Services.AddIgBzApplication();
 
+// انتشار خودکار پست اینستاگرام (Consumer)
+builder.Services.AddScoped<IGBZ.Api.Consumers.IProductInstagramPublisher, IGBZ.Api.Consumers.ProductInstagramPublisher>();
+
 // ── احراز هویت JWT ──
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
