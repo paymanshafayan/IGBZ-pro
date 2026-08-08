@@ -23,6 +23,9 @@ public class Product : Entity, ITenantEntity
 
     public bool IsPublished { get; set; }
 
+    /// <summary>حذف نرم — محصولات حذف‌شده در کاتالوگ نمایش داده نمی‌شوند.</summary>
+    public bool Deleted { get; set; }
+
     public bool IsDigital { get; set; }
 
     /// <summary>برای محصولات دیجیتال — ارجاع به فایل دانلودی.</summary>

@@ -1,6 +1,7 @@
 namespace IGBZ.Application;
 
 using IGBZ.Application.Auth;
+using IGBZ.Application.Catalog;
 using IGBZ.Application.Discounts;
 using IGBZ.Application.Orders;
 using IGBZ.Application.Payments;
@@ -40,6 +41,9 @@ public static class ApplicationServiceCollectionExtensions
         // Provisioning + اشتراک
         services.AddScoped<ITenantProvisioningService, TenantProvisioningService>();
         services.AddScoped<ITenantSubscriptionService, TenantSubscriptionService>();
+
+        // کاتالوگ عمومی (Storefront)
+        services.AddScoped<ICatalogService, CatalogService>();
 
         return services;
     }

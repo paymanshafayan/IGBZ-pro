@@ -17,12 +17,14 @@
 src/
   IGBZ.Domain/          موجودیت‌ها، Value Objects، Aggregate ها، ماشین‌حالت سفارش
   IGBZ.Application/     اینترفیس‌ها، پایپلاین قیمت‌گذاری، TenantContext، موتور تخفیف
-  IGBZ.Infrastructure/  MongoDB، Repository های تننت‌محور
-  IGBZ.Api/             Web API واحد (فاز ۲)
+  IGBZ.Infrastructure/  MongoDB، Repository های تننت‌محور، JWT، درگاه‌ها
+  IGBZ.Api/             Web API واحد + Middleware تننت + Controllers
+apps/
+  storefront/           فروشگاه تننت (Next.js + React 19)
 tests/
   IGBZ.Domain.Tests/        ماشین‌حالت، Money، موجودی
-  IGBZ.Application.Tests/   پایپلاین قیمت، تخفیف، جداسازی چندمستأجری
-  IGBZ.Infrastructure.Tests/
+  IGBZ.Application.Tests/   پایپلاین قیمت، تخفیف، کیف‌پول، کاتالوگ، Provisioning
+  IGBZ.Infrastructure.Tests/ جداسازی تننت واقعی (Mongo2Go)، end-to-end
 ```
 
 ## اجرای محلی
@@ -50,4 +52,5 @@ dotnet test IGBZ.sln
 | 0 | زیرساخت (CI، docker-compose، ساختار راه‌حل) | ✅ |
 | 1 | هستهٔ موتور تجارت + چندمستأجری | ✅ |
 | 2 | Web API واحد + JWT + Provisioning + درگاه تست | ✅ |
-| 3+ | Storefront، اپ‌ها، پرداخت واقعی، اینستاگرام، AI، LMS | ⏳ |
+| 3 | Storefront تننت (Next.js) | ✅ |
+| 4+ | اپ‌ها، پرداخت واقعی، اینستاگرام، AI، LMS | ⏳ |
