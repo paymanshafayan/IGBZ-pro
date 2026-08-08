@@ -56,6 +56,12 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddHttpClient("KenarDivarApi");
         services.AddHttpClient("TapinPost");
 
+        // HttpClientهای استودیوی AI
+        services.AddHttpClient("AiImageStudio");
+        services.AddHttpClient("AiVideoStudio");
+        services.AddHttpClient("AiTtsProvider");
+        services.AddHttpClient("TranslationProvider");
+
         // Repository های عمومی (باز) + تننت‌محور
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
         services.AddScoped(typeof(ITenantScopedRepository<>), typeof(TenantScopedRepository<>));

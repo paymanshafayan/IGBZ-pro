@@ -1,6 +1,7 @@
 namespace IGBZ.Application;
 
 using IGBZ.Application.Admin;
+using IGBZ.Application.AiStudio;
 using IGBZ.Application.Auth;
 using IGBZ.Application.BNPL;
 using IGBZ.Application.Catalog;
@@ -59,6 +60,10 @@ public static class ApplicationServiceCollectionExtensions
         // مارکت‌پلیس + لجستیک
         services.AddScoped<IMarketplaceService, MarketplaceService>();
         services.AddScoped<ILogisticsService, LogisticsService>();
+
+        // استودیوی AI محتوا
+        services.AddScoped<IAiStudioService, AiStudioService>();
+        services.AddScoped<IBackgroundMusicCatalogService, BackgroundMusicCatalogService>();
 
         return services;
     }

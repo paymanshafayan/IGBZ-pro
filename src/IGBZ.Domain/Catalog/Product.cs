@@ -31,6 +31,14 @@ public class Product : Entity, ITenantEntity
     /// <summary>برای محصولات دیجیتال — ارجاع به فایل دانلودی.</summary>
     public string? DownloadRef { get; set; }
 
+    // ── سئو (تولید خودکار در فاز ۹) ──
+    public string? MetaTitle { get; set; }
+    public string? MetaDescription { get; set; }
+    public string? MetaKeywords { get; set; }
+
+    /// <summary>ترجمه‌های خودکار محصول (زبان‌های دیگر) — سند بخش ۱۴.</summary>
+    public List<ProductTranslation> Translations { get; set; } = new();
+
     public ProductVariant? GetVariant(string sku) =>
         Variants.FirstOrDefault(v => string.Equals(v.Sku, sku, StringComparison.OrdinalIgnoreCase));
 
@@ -42,4 +50,13 @@ public class Product : Entity, ITenantEntity
         var variant = GetVariant(sku);
         return variant != null && variant.AvailableQuantity >= quantity;
     }
+}
+
+/// <summary>ترجمهٔ خودکار نام/توضیحات محصول به یک زبان.</summary>
+public class ProductTranslation
+{
+    public string LanguageCode { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public DateTime CreatedOnUtc { get; set; } = DateTime.UtcNow;
 }
