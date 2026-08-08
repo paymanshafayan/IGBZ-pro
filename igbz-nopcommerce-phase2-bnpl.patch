@@ -1,0 +1,1555 @@
+From fe1d2692cac6c7a6fbbca2c328b4a667474d8267 Mon Sep 17 00:00:00 2001
+From: arena-ai-coding-agent <arena-ai-coding-agent@users.noreply.github.com>
+Date: Sat, 8 Aug 2026 08:49:02 +0000
+Subject: [PATCH] =?UTF-8?q?feat:=20=D9=81=D8=A7=D8=B2=202=20=E2=80=94=20BN?=
+ =?UTF-8?q?PL=20=D8=AF=DB=8C=D8=AC=DB=8C=E2=80=8C=D9=BE=DB=8C=20(=D8=B1?=
+ =?UTF-8?q?=D8=B3=D9=85=DB=8C)=20+=20=D8=A7=D8=B3=D9=86=D9=BE=E2=80=8C?=
+ =?UTF-8?q?=D9=BE=DB=8C=20(=D9=85=D8=B1=D8=AC=D8=B9=20NopPlus)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+دیجی‌پی (از مستندات رسمی mydigipay.com/developers/docs/upg):
+- لاگین OAuth: POST /oauth/token با Basic (client_id:client_secret) + form {username,password,grant_type}
+- تیکت خرید: POST /tickets/business?type=11 با هدر Agent/Digipay-Version + basketDetailsDto (اجباری BNPL)
+- تایید: POST /purchases/verify?type=13 با {trackingCode, providerId} + مقایسهٔ مبلغ
+- محیط UAT/Live قابل انتخاب
+
+اسنپ‌پی (از پلاگین مرجع github.com/parshan2/SnappPay):
+- OAuth: POST /api/online/v1/oauth/token (Basic + form) → Bearer
+- اجازه: GET /api/online/offer/v1/eligible?amount=
+- توکن پرداخت: POST /api/online/payment/v1/token (transactionId, amount, returnURL, cartList)
+- تایید: POST /api/online/payment/v1/verify {paymentToken}
+- BaseUrl پیش‌فرض Staging (قابل‌تغییر)
+
+زیرساخت:
+- Domain/Bnpl.cs (BnplCredential, BnplPaymentRecord) + Builder/Migration + ایندکس‌ها
+- Services/BnplService.cs (IBnplService) — دیجی‌پی + اسنپ‌پی
+- Controllers/Public/BnplController.cs — check-eligibility / start-payment / verify-payment (بازنویسی کامل)
+- Controllers/Admin/BnplAdminController.cs + Views/BnplAdmin (پنل اعتبارنامه)
+- حذف SnappPayBnplGateway قدیمی (Placeholder) و جایگزینی با BnplService واقعی
+- چک‌لیست: تشخیص خودکار دیجی‌پی/اسنپ‌پی از جدول BnplCredential
+---
+ .../Controllers/Admin/BnplAdminController.cs  | 107 +++
+ .../Controllers/Public/BnplController.cs      | 127 +++-
+ .../Data/EntityBuilders.cs                    |  41 ++
+ .../Data/SchemaMigration.cs                   |  27 +
+ .../Domain/Bnpl.cs                            |  80 +++
+ .../MultiTenantStoresPlugin.cs                |   5 +-
+ .../Nop.Plugin.Misc.MultiTenantStores.csproj  |   8 +
+ .../Services/BnplService.cs                   | 613 ++++++++++++++++++
+ .../Services/LaunchChecklistService.cs        |  15 +-
+ .../Services/SnappPayBnplGateway.cs           | 141 ----
+ .../Views/BnplAdmin/Edit.cshtml               |  88 +++
+ .../Views/BnplAdmin/Index.cshtml              |  74 +++
+ 12 files changed, 1155 insertions(+), 171 deletions(-)
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Admin/BnplAdminController.cs
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/Bnpl.cs
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/BnplService.cs
+ delete mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/SnappPayBnplGateway.cs
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/BnplAdmin/Edit.cshtml
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/BnplAdmin/Index.cshtml
+
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Admin/BnplAdminController.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Admin/BnplAdminController.cs
+new file mode 100644
+index 0000000..326f9bf
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Admin/BnplAdminController.cs
+@@ -0,0 +1,107 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Controllers.Admin
++{
++    using System.Linq;
++    using System.Threading.Tasks;
++    using Microsoft.AspNetCore.Mvc;
++    using Nop.Core;
++    using Nop.Data;
++    using Nop.Plugin.Misc.MultiTenantStores.Domain;
++    using Nop.Web.Framework;
++    using Nop.Web.Framework.Controllers;
++    using Nop.Web.Framework.Mvc.Filters;
++    using Nop.Plugin.Misc.MultiTenantStores.Infrastructure.Filters;
++
++    /// <summary>
++    /// پنل مدیریت اعتبارنامه‌های BNPL (دیجی‌پی/اسنپ‌پی) به‌ازای هر فروشگاه.
++    /// </summary>
++    [Area(AreaNames.ADMIN)]
++    [AuthorizeAdmin]
++    [AutoValidateAntiforgeryToken]
++    [ServiceFilter(typeof(TenantAdminScopeFilter))]
++    public class BnplAdminController : BasePluginController
++    {
++        private readonly IRepository<BnplCredential> _credentialRepository;
++        private readonly IStoreContext _storeContext;
++
++        public BnplAdminController(IRepository<BnplCredential> credentialRepository, IStoreContext storeContext)
++        {
++            _credentialRepository = credentialRepository;
++            _storeContext = storeContext;
++        }
++
++        [HttpGet]
++        public async Task<IActionResult> Index()
++        {
++            var store = await _storeContext.GetCurrentStoreAsync();
++            var creds = await _credentialRepository.GetAllAsync(q => q.Where(c => c.StoreId == store.Id));
++
++            return View("~/Plugins/Misc.MultiTenantStores/Views/BnplAdmin/Index.cshtml", creds);
++        }
++
++        [HttpGet]
++        public async Task<IActionResult> Edit(int id)
++        {
++            var store = await _storeContext.GetCurrentStoreAsync();
++            var cred = await _credentialRepository.GetByIdAsync(id);
++            if (cred == null || cred.StoreId != store.Id)
++                return NotFound();
++
++            return View("~/Plugins/Misc.MultiTenantStores/Views/BnplAdmin/Edit.cshtml", cred);
++        }
++
++        [HttpPost]
++        public async Task<IActionResult> Save(BnplCredential model)
++        {
++            var store = await _storeContext.GetCurrentStoreAsync();
++
++            if (model.Id > 0)
++            {
++                var existing = await _credentialRepository.GetByIdAsync(model.Id);
++                if (existing == null || existing.StoreId != store.Id)
++                    return NotFound();
++
++                existing.Username = model.Username;
++                existing.Password = model.Password;
++                existing.ClientId = model.ClientId;
++                existing.ClientSecret = model.ClientSecret;
++                existing.Environment = model.Environment;
++                existing.BaseUrlOverride = model.BaseUrlOverride;
++                existing.IsActive = model.IsActive;
++                existing.UpdatedOnUtc = System.DateTime.UtcNow;
++
++                await _credentialRepository.UpdateAsync(existing);
++            }
++            else
++            {
++                await _credentialRepository.InsertAsync(new BnplCredential
++                {
++                    StoreId = store.Id,
++                    ProviderKey = model.ProviderKey?.Trim().ToLowerInvariant(),
++                    Username = model.Username,
++                    Password = model.Password,
++                    ClientId = model.ClientId,
++                    ClientSecret = model.ClientSecret,
++                    Environment = model.Environment,
++                    BaseUrlOverride = model.BaseUrlOverride,
++                    IsActive = model.IsActive,
++                    CreatedOnUtc = System.DateTime.UtcNow,
++                    UpdatedOnUtc = System.DateTime.UtcNow
++                });
++            }
++
++            return RedirectToAction("Index");
++        }
++
++        [HttpPost]
++        public async Task<IActionResult> Delete(int id)
++        {
++            var store = await _storeContext.GetCurrentStoreAsync();
++            var cred = await _credentialRepository.GetByIdAsync(id);
++            if (cred == null || cred.StoreId != store.Id)
++                return NotFound();
++
++            await _credentialRepository.DeleteAsync(cred);
++            return RedirectToAction("Index");
++        }
++    }
++}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/BnplController.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/BnplController.cs
+index a74b0db..ddf3fee 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/BnplController.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/BnplController.cs
+@@ -1,67 +1,144 @@
+ namespace Nop.Plugin.Misc.MultiTenantStores.Controllers.Public
+ {
+-    using System.Linq;
+     using System.Threading.Tasks;
+     using Microsoft.AspNetCore.Mvc;
+     using Nop.Core;
++    using Nop.Core.Domain.Orders;
++    using Nop.Services.Orders;
+     using Nop.Plugin.Misc.MultiTenantStores.Services;
+ 
+     /// <summary>
+-    /// اولین نقطهٔ ورود واقعی HTTP برای SnappPayBnplGateway.CheckEligibilityAndInstallmentsAsync —
+-    /// این سرویس قبلاً کامل نوشته شده بود ولی هیچ Controllerی صداش نمی‌زد.
++    /// پرداخت اعتباری/اقساطی (BNPL) — دیجی‌پی و اسنپ‌پی.
++    /// جایگزین BnplController قبلی (که فقط اسکلت با Endpoint نمادین بود) با یکپارچه‌سازی واقعی.
+     /// </summary>
+     [ApiController]
+     [Route("api/checkout/bnpl")]
+     public class BnplController : ControllerBase
+     {
+-        private const string ProviderKey = "snapppay";
+-
++        private readonly IWorkContext _workContext;
+         private readonly IStoreContext _storeContext;
+-        private readonly ITenantIntegrationCredentialService _credentialService;
+-        private readonly SnappPayBnplGateway _bnplGateway;
++        private readonly IBnplService _bnplService;
++        private readonly IOrderService _orderService;
++        private readonly IOrderProcessingService _orderProcessingService;
+ 
+         public BnplController(
++            IWorkContext workContext,
+             IStoreContext storeContext,
+-            ITenantIntegrationCredentialService credentialService,
+-            SnappPayBnplGateway bnplGateway)
++            IBnplService bnplService,
++            IOrderService orderService,
++            IOrderProcessingService orderProcessingService)
+         {
++            _workContext = workContext;
+             _storeContext = storeContext;
+-            _credentialService = credentialService;
+-            _bnplGateway = bnplGateway;
++            _bnplService = bnplService;
++            _orderService = orderService;
++            _orderProcessingService = orderProcessingService;
+         }
+ 
++        /// <summary>بررسی اجازه/صلاحیت خرید اعتباری (قبل از نمایش دکمه).</summary>
+         [HttpPost("check-eligibility")]
+         public async Task<IActionResult> CheckEligibility([FromBody] BnplEligibilityRequestDto dto)
+         {
++            var customer = await _workContext.GetCurrentCustomerAsync();
++            var store = await _storeContext.GetCurrentStoreAsync();
++
++            if (dto == null || string.IsNullOrWhiteSpace(dto.ProviderKey))
++                return BadRequest(new { success = false, message = "ارائه‌دهندهٔ BNPL مشخص نشده است." });
++
++            var result = await _bnplService.CheckEligibilityAsync(
++                store.Id, customer.Id, dto.ProviderKey.Trim().ToLowerInvariant(), dto.AmountToman, dto.CustomerMobile, dto.CustomerNationalId);
++
++            return Ok(new { success = true, isEligible = result.IsEligible, providerKey = result.ProviderKey, message = result.Message });
++        }
++
++        /// <summary>شروع پرداخت اعتباری: ایجاد تیکت/توکن و برگرداندن آدرس هدایت به درگاه.</summary>
++        [HttpPost("start-payment")]
++        public async Task<IActionResult> StartPayment([FromBody] BnplStartPaymentRequestDto dto)
++        {
++            var customer = await _workContext.GetCurrentCustomerAsync();
++            var store = await _storeContext.GetCurrentStoreAsync();
++
++            if (dto == null || dto.OrderId <= 0 || string.IsNullOrWhiteSpace(dto.ProviderKey))
++                return BadRequest(new { success = false, message = "اطلاعات پرداخت اعتباری ناقص است." });
++
++            var order = await _orderService.GetOrderByIdAsync(dto.OrderId);
++            if (order == null || order.CustomerId != customer.Id)
++                return NotFound(new { success = false, message = "سفارش یافت نشد." });
++
++            var result = await _bnplService.StartPaymentAsync(
++                store.Id, order.Id, customer.Id, dto.ProviderKey.Trim().ToLowerInvariant(),
++                order.OrderTotal, dto.CallbackUrl, dto.CustomerMobile ?? customer.Phone);
++
++            if (!result.IsSuccess)
++                return BadRequest(new { success = false, message = result.Message, transactionId = result.TransactionId });
++
++            return Ok(new
++            {
++                success = true,
++                redirectUrl = result.RedirectUrl,
++                transactionId = result.TransactionId,
++                paymentToken = result.PaymentToken,
++                providerKey = dto.ProviderKey
++            });
++        }
++
++        /// <summary>تایید نهایی پرداخت (بازگشت از درگاه) — فقط بعد از تایید واقعی ارائه‌دهنده.</summary>
++        [HttpPost("verify-payment")]
++        public async Task<IActionResult> VerifyPayment([FromBody] BnplVerifyRequestDto dto)
++        {
++            var customer = await _workContext.GetCurrentCustomerAsync();
+             var store = await _storeContext.GetCurrentStoreAsync();
+-            var credentials = await _credentialService.GetByStoreIdAsync(store.Id);
+-            var credential = credentials.FirstOrDefault(c => c.ProviderKey == ProviderKey && c.IsActive);
+ 
+-            if (credential == null)
+-                return BadRequest(new { success = false, message = "پرداخت اقساطی (اسنپ‌پی) برای این فروشگاه فعال نشده است." });
++            if (dto == null || string.IsNullOrWhiteSpace(dto.ProviderKey) || string.IsNullOrWhiteSpace(dto.TransactionId))
++                return BadRequest(new { success = false, message = "اطلاعات تایید ناقص است." });
+ 
+-            var apiKey = _credentialService.DecryptForActualUse(credential.ApiKey);
+-            var result = await _bnplGateway.CheckEligibilityAndInstallmentsAsync(
+-                apiKey, dto.CartTotalToman, dto.CustomerNationalId, dto.CustomerMobile);
++            var verifyResult = await _bnplService.VerifyPaymentAsync(
++                store.Id, dto.ProviderKey.Trim().ToLowerInvariant(), dto.TransactionId, dto.PaymentToken, dto.AmountToman);
+ 
+-            if (!result.IsEligible)
+-                return Ok(new { success = false, message = result.Message });
++            if (!verifyResult.IsSuccess)
++                return BadRequest(new { success = false, message = verifyResult.Message });
++
++            // در صورت موفقیت، سفارش را پرداخت‌شده علامت بزن (فقط اگر قبلاً پرداخت نشده باشد)
++            var order = await _orderService.GetOrderByIdAsync(dto.OrderId);
++            if (order != null && order.PaymentStatusId != (int)PaymentStatus.Paid)
++            {
++                order.PaymentMethodSystemName = $"BNPL:{dto.ProviderKey}";
++                await _orderService.UpdateOrderAsync(order);
++                await _orderProcessingService.MarkOrderAsPaidAsync(order);
++            }
+ 
+             return Ok(new
+             {
+                 success = true,
+-                approvalReferenceId = result.ApprovalReferenceId,
+-                monthlyInstallmentAmount = result.MonthlyInstallmentAmount,
+-                installments = result.Installments,
+-                message = result.Message
++                alreadyProcessed = verifyResult.AlreadyProcessed,
++                trackingCode = verifyResult.TrackingCode,
++                message = verifyResult.Message
+             });
+         }
+     }
+ 
+     public class BnplEligibilityRequestDto
+     {
+-        public decimal CartTotalToman { get; set; }
++        public string ProviderKey { get; set; }
++        public decimal AmountToman { get; set; }
++        public string CustomerMobile { get; set; }
+         public string CustomerNationalId { get; set; }
++    }
++
++    public class BnplStartPaymentRequestDto
++    {
++        public int OrderId { get; set; }
++        public string ProviderKey { get; set; }
++        public string CallbackUrl { get; set; }
+         public string CustomerMobile { get; set; }
+     }
++
++    public class BnplVerifyRequestDto
++    {
++        public int OrderId { get; set; }
++        public string ProviderKey { get; set; }
++        public string TransactionId { get; set; }
++        public string PaymentToken { get; set; }
++        public decimal AmountToman { get; set; }
++    }
+ }
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs
+index 8ea0715..30fc292 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs
+@@ -287,4 +287,45 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Data
+                 .WithColumn(nameof(LaunchChecklistItemState.UpdatedOnUtc)).AsDateTime2().NotNullable();
+         }
+     }
++
++    /// <summary>اعتبارنامه‌های BNPL (دیجی‌پی/اسنپ‌پی).</summary>
++    public class BnplCredentialBuilder : NopEntityBuilder<BnplCredential>
++    {
++        public override void MapEntity(CreateTableExpressionBuilder table)
++        {
++            table
++                .WithColumn(nameof(BnplCredential.StoreId)).AsInt32().NotNullable()
++                .WithColumn(nameof(BnplCredential.ProviderKey)).AsString(50).NotNullable()
++                .WithColumn(nameof(BnplCredential.Username)).AsString(200).Nullable()
++                .WithColumn(nameof(BnplCredential.Password)).AsString(500).Nullable()
++                .WithColumn(nameof(BnplCredential.ClientId)).AsString(200).Nullable()
++                .WithColumn(nameof(BnplCredential.ClientSecret)).AsString(500).Nullable()
++                .WithColumn(nameof(BnplCredential.Environment)).AsString(20).Nullable()
++                .WithColumn(nameof(BnplCredential.BaseUrlOverride)).AsString(500).Nullable()
++                .WithColumn(nameof(BnplCredential.IsActive)).AsBoolean().NotNullable()
++                .WithColumn(nameof(BnplCredential.CreatedOnUtc)).AsDateTime2().NotNullable()
++                .WithColumn(nameof(BnplCredential.UpdatedOnUtc)).AsDateTime2().NotNullable();
++        }
++    }
++
++    /// <summary>رکورد پرداخت BNPL (برای پیگیری/Verify).</summary>
++    public class BnplPaymentRecordBuilder : NopEntityBuilder<BnplPaymentRecord>
++    {
++        public override void MapEntity(CreateTableExpressionBuilder table)
++        {
++            table
++                .WithColumn(nameof(BnplPaymentRecord.StoreId)).AsInt32().NotNullable()
++                .WithColumn(nameof(BnplPaymentRecord.OrderId)).AsInt32().NotNullable()
++                .WithColumn(nameof(BnplPaymentRecord.CustomerId)).AsInt32().NotNullable()
++                .WithColumn(nameof(BnplPaymentRecord.ProviderKey)).AsString(50).NotNullable()
++                .WithColumn(nameof(BnplPaymentRecord.TransactionId)).AsString(100).NotNullable()
++                .WithColumn(nameof(BnplPaymentRecord.PaymentToken)).AsString(300).Nullable()
++                .WithColumn(nameof(BnplPaymentRecord.AmountToman)).AsDecimal(18, 4).NotNullable()
++                .WithColumn(nameof(BnplPaymentRecord.Status)).AsInt32().NotNullable()
++                .WithColumn(nameof(BnplPaymentRecord.RawRequestJson)).AsString(int.MaxValue).Nullable()
++                .WithColumn(nameof(BnplPaymentRecord.RawResponseJson)).AsString(int.MaxValue).Nullable()
++                .WithColumn(nameof(BnplPaymentRecord.CreatedOnUtc)).AsDateTime2().NotNullable()
++                .WithColumn(nameof(BnplPaymentRecord.VerifiedOnUtc)).AsDateTime2().Nullable();
++        }
++    }
+ }
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs
+index b6479c2..81683b0 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs
+@@ -163,6 +163,33 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Data
+                     .WithOptions().Unique();
+             }
+ 
++            // ── BNPL (دیجی‌پی/اسنپ‌پی) ──
++            if (!Schema.Table(nameof(BnplCredential)).Exists())
++                Create.TableFor<BnplCredential>();
++
++            if (Schema.Table(nameof(BnplCredential)).Exists()
++                && !Schema.Table(nameof(BnplCredential)).Index("IX_BnplCredential_Store_Provider").Exists())
++            {
++                Create.Index("IX_BnplCredential_Store_Provider")
++                    .OnTable(nameof(BnplCredential))
++                    .OnColumn(nameof(BnplCredential.StoreId)).Ascending()
++                    .OnColumn(nameof(BnplCredential.ProviderKey)).Ascending()
++                    .WithOptions().Unique();
++            }
++
++            if (!Schema.Table(nameof(BnplPaymentRecord)).Exists())
++                Create.TableFor<BnplPaymentRecord>();
++
++            if (Schema.Table(nameof(BnplPaymentRecord)).Exists()
++                && !Schema.Table(nameof(BnplPaymentRecord)).Index("IX_BnplPaymentRecord_Store_Provider_Trans").Exists())
++            {
++                Create.Index("IX_BnplPaymentRecord_Store_Provider_Trans")
++                    .OnTable(nameof(BnplPaymentRecord))
++                    .OnColumn(nameof(BnplPaymentRecord.StoreId)).Ascending()
++                    .OnColumn(nameof(BnplPaymentRecord.ProviderKey)).Ascending()
++                    .OnColumn(nameof(BnplPaymentRecord.TransactionId)).Ascending();
++            }
++
+             // --- دادهٔ اولیهٔ واقعی سایت مادر (نه دادهٔ فرضی؛ محتوای واقعی برای شروع، کاملاً از پنل
+             // مدیریت قابل ویرایش/حذف طبق درخواست کاربر) — فقط یک‌بار در نصب اجرا می‌شود. ---
+             SeedDefaultTenantPlans();
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/Bnpl.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/Bnpl.cs
+new file mode 100644
+index 0000000..89b5e83
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/Bnpl.cs
+@@ -0,0 +1,80 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Domain
++{
++    using System;
++    using Nop.Core;
++
++    /// <summary>
++    /// اعتبارنامه‌های BNPL (دیجی‌پی/اسنپ‌پی) — جدا از Credential عمومی، مخصوص تنظیمات OAuth هر ارائه‌دهنده.
++    /// (اختیاری: می‌توان از TenantIntegrationCredential هم استفاده کرد؛ این جدول برای وضوح تنظیمات BNPL است.)
++    /// </summary>
++    public class BnplCredential : BaseEntity
++    {
++        public int StoreId { get; set; }
++
++        /// <summary>"digipay" یا "snapppay"</summary>
++        public string ProviderKey { get; set; }
++
++        public string Username { get; set; }
++        public string Password { get; set; }
++        public string ClientId { get; set; }
++        public string ClientSecret { get; set; }
++
++        /// <summary>محیط: "uat" یا "live" (برای دیجی‌پی)؛ برای اسنپ‌پی BaseUrl مستقیم.</summary>
++        public string Environment { get; set; }
++
++        /// <summary>برای اسنپ‌پی: آدرس BaseUrl سفارشی (اگر خالی بود، پیش‌فرض Staging).</summary>
++        public string BaseUrlOverride { get; set; }
++
++        public bool IsActive { get; set; }
++        public DateTime CreatedOnUtc { get; set; }
++        public DateTime UpdatedOnUtc { get; set; }
++    }
++
++    /// <summary>اجازهٔ BNPL (Eligibility) — ثبت نتیجهٔ استعلام اعتبار به‌ازای هر مشتری/سبد.</summary>
++    public class BnplEligibilityRecord : BaseEntity
++    {
++        public int StoreId { get; set; }
++        public int CustomerId { get; set; }
++        public string ProviderKey { get; set; }
++
++        /// <summary>مبلغ سبد به تومان.</summary>
++        public decimal AmountToman { get; set; }
++
++        public bool IsEligible { get; set; }
++        public string ResponseJson { get; set; }
++        public DateTime CheckedOnUtc { get; set; }
++    }
++
++    /// <summary>توکن/تیکت پرداخت BNPL و وضعیت آن — برای پیگیری و Verify.</summary>
++    public class BnplPaymentRecord : BaseEntity
++    {
++        public int StoreId { get; set; }
++        public int OrderId { get; set; }
++        public int CustomerId { get; set; }
++        public string ProviderKey { get; set; }
++
++        /// <summary>شناسهٔ یکتای ما برای این تراکنش (providerId در دیجی‌پی / transactionId در اسنپ‌پی).</summary>
++        public string TransactionId { get; set; }
++
++        /// <summary>توکن/تیکت پرداخت برگشتی از ارائه‌دهنده.</summary>
++        public string PaymentToken { get; set; }
++
++        public decimal AmountToman { get; set; }
++
++        public BnplPaymentStatus Status { get; set; }
++        public string RawRequestJson { get; set; }
++        public string RawResponseJson { get; set; }
++        public DateTime CreatedOnUtc { get; set; }
++        public DateTime? VerifiedOnUtc { get; set; }
++    }
++
++    public enum BnplPaymentStatus
++    {
++        Requested = 0,
++        RedirectedToGateway = 10,
++        Paid = 20,
++        Failed = 30,
++        Settled = 40,
++        Reverted = 50
++    }
++}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs
+index f49748f..96d4003 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs
+@@ -123,6 +123,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores
+             services.AddScoped<ITenantIntegrationCredentialService, TenantIntegrationCredentialService>();
+             services.AddScoped<ILaunchChecklistService, LaunchChecklistService>();
+             services.AddScoped<IVirtualTryOnService, VirtualTryOnService>();
++            services.AddScoped<IBnplService, BnplService>();
+             services.AddScoped<IAffiliateMarketingService, AffiliateMarketingService>();
+             services.AddScoped<ICourseService, CourseService>();
+             services.AddScoped<IWalletService, WalletService>();
+@@ -203,12 +204,12 @@ namespace Nop.Plugin.Misc.MultiTenantStores
+                 return new LmsAndVideoSecurityService(hmacSecret);
+             });
+ 
+-            // SnappPayBnplGateway یک HttpClient اختصاصی می‌گیرد (Typed Client)
+-            services.AddHttpClient<SnappPayBnplGateway>();
+ 
+             // HttpClientهای نام‌گذاری‌شدهٔ مورد استفاده در ParbadPaymentService/CryptoAndTranslationService/
+             // MarketplaceOmnichannelService/LogisticsAndShippingService/SeoAndAdNetworksFeedService
+             services.AddHttpClient("ParbadGateway");
++            // BNPL: دیجی‌پی + اسنپ‌پی
++            services.AddHttpClient("BnplGateway");
+             // پرو لباس IDM-VTON: Endpoint محلی + Replicate ابری (فال‌بک)
+             services.AddHttpClient("VirtualTryOn");
+             services.AddHttpClient("ReplicateApi");
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Nop.Plugin.Misc.MultiTenantStores.csproj b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Nop.Plugin.Misc.MultiTenantStores.csproj
+index 18c3f81..8a2d116 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Nop.Plugin.Misc.MultiTenantStores.csproj
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Nop.Plugin.Misc.MultiTenantStores.csproj
+@@ -21,6 +21,8 @@
+     <None Remove="Views\LandingContentBlocks\Index.cshtml" />
+     <None Remove="Views\LandingContentBlocks\CreateOrUpdate.cshtml" />
+     <None Remove="Views\Shared\Components\LaunchChecklist\Default.cshtml" />
++    <None Remove="Views\BnplAdmin\Index.cshtml" />
++    <None Remove="Views\BnplAdmin\Edit.cshtml" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+@@ -60,6 +62,12 @@
+     <Content Include="Views\Shared\Components\LaunchChecklist\Default.cshtml">
+       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+     </Content>
++    <Content Include="Views\BnplAdmin\Index.cshtml">
++      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
++    </Content>
++    <Content Include="Views\BnplAdmin\Edit.cshtml">
++      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
++    </Content>
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/BnplService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/BnplService.cs
+new file mode 100644
+index 0000000..3c1f29e
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/BnplService.cs
+@@ -0,0 +1,613 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Services
++{
++    using System;
++    using System.Collections.Generic;
++    using System.Linq;
++    using System.Net.Http;
++    using System.Net.Http.Headers;
++    using System.Net.Http.Json;
++    using System.Text;
++    using System.Text.Json;
++    using System.Text.Json.Serialization;
++    using System.Threading.Tasks;
++    using Nop.Data;
++    using Nop.Plugin.Misc.MultiTenantStores.Domain;
++
++    /// <summary>
++    /// پرداخت اعتباری/اقساطی (BNPL) برای دیجی‌پی و اسنپ‌پی.
++    /// </summary>
++    public interface IBnplService
++    {
++        Task<BnplEligibilityResult> CheckEligibilityAsync(int storeId, int customerId, string providerKey, decimal amountToman, string customerMobile, string customerNationalId);
++
++        Task<BnplStartResult> StartPaymentAsync(int storeId, int orderId, int customerId, string providerKey, decimal amountToman, string callbackUrl, string customerMobile);
++
++        Task<BnplVerifyResult> VerifyPaymentAsync(int storeId, string providerKey, string transactionId, string paymentToken, decimal amountToman);
++    }
++
++    public class BnplEligibilityResult
++    {
++        public bool IsEligible { get; set; }
++        public string Message { get; set; }
++        public string ProviderKey { get; set; }
++    }
++
++    public class BnplStartResult
++    {
++        public bool IsSuccess { get; set; }
++        public string RedirectUrl { get; set; }
++        public string TransactionId { get; set; }
++        public string PaymentToken { get; set; }
++        public string Message { get; set; }
++    }
++
++    public class BnplVerifyResult
++    {
++        public bool IsSuccess { get; set; }
++        public string Message { get; set; }
++        public string TrackingCode { get; set; }
++        public bool AlreadyProcessed { get; set; }
++    }
++
++    public class BnplService : IBnplService
++    {
++        private const string DigipayProvider = "digipay";
++        private const string SnapppayProvider = "snapppay";
++
++        // ── دیجی‌پی (مستندات رسمی: mydigipay.com/developers/docs/upg) ──
++        private const string DigipayUatBase = "https://uat.mydigipay.info/digipay/api";
++        private const string DigipayLiveBase = "https://api.mydigipay.com/digipay/api";
++
++        // ── اسنپ‌پی (از پلاگین مرجع NopPlus.Plugin.SnappPay) ──
++        private const string SnapppayDefaultBase = "https://fms-gateway-staging.apps.public.okd4.teh-1.snappcloud.io";
++
++        private readonly IHttpClientFactory _httpClientFactory;
++        private readonly IRepository<BnplCredential> _credentialRepository;
++        private readonly IRepository<BnplPaymentRecord> _paymentRepository;
++
++        public BnplService(
++            IHttpClientFactory httpClientFactory,
++            IRepository<BnplCredential> credentialRepository,
++            IRepository<BnplPaymentRecord> paymentRepository)
++        {
++            _httpClientFactory = httpClientFactory;
++            _credentialRepository = credentialRepository;
++            _paymentRepository = paymentRepository;
++        }
++
++        // ────────────────────────── Eligibility (اجازه) ──────────────────────────
++
++        public async Task<BnplEligibilityResult> CheckEligibilityAsync(
++            int storeId, int customerId, string providerKey, decimal amountToman, string customerMobile, string customerNationalId)
++        {
++            var credential = await GetActiveCredentialAsync(storeId, providerKey);
++            if (credential == null)
++                return new BnplEligibilityResult { IsEligible = false, ProviderKey = providerKey, Message = "پرداخت اعتباری برای این فروشگاه فعال نشده است." };
++
++            if (providerKey == DigipayProvider)
++            {
++                // دیجی‌پی: Eligibility از سمت پلتفرم هنگام تیکت (basketDetailsDto) انجام می‌شود؛
++                // در این مرحله فقط بررسی اعتبار کلی مبلغ انجام می‌شود و نتیجهٔ نهایی در StartPayment/Verify می‌آید.
++                return new BnplEligibilityResult
++                {
++                    IsEligible = true,
++                    ProviderKey = providerKey,
++                    Message = "امکان پرداخت اعتباری دیجی‌پی برای این مبلغ بررسی می‌شود."
++                };
++            }
++
++            if (providerKey == SnapppayProvider)
++            {
++                return await CheckSnapppayEligibilityAsync(credential, amountToman);
++            }
++
++            return new BnplEligibilityResult { IsEligible = false, ProviderKey = providerKey, Message = "ارائه‌دهندهٔ BNPL ناشناخته است." };
++        }
++
++        // ────────────────────────── Start Payment ──────────────────────────
++
++        public async Task<BnplStartResult> StartPaymentAsync(
++            int storeId, int orderId, int customerId, string providerKey, decimal amountToman, string callbackUrl, string customerMobile)
++        {
++            var credential = await GetActiveCredentialAsync(storeId, providerKey);
++            if (credential == null)
++                return new BnplStartResult { IsSuccess = false, Message = "پرداخت اعتباری برای این فروشگاه فعال نشده است." };
++
++            if (providerKey == DigipayProvider)
++                return await StartDigipayAsync(credential, storeId, orderId, customerId, amountToman, callbackUrl, customerMobile);
++
++            if (providerKey == SnapppayProvider)
++                return await StartSnapppayAsync(credential, storeId, orderId, customerId, amountToman, callbackUrl, customerMobile);
++
++            return new BnplStartResult { IsSuccess = false, Message = "ارائه‌دهندهٔ BNPL ناشناخته است." };
++        }
++
++        // ────────────────────────── Verify Payment ──────────────────────────
++
++        public async Task<BnplVerifyResult> VerifyPaymentAsync(
++            int storeId, string providerKey, string transactionId, string paymentToken, decimal amountToman)
++        {
++            var credential = await GetActiveCredentialAsync(storeId, providerKey);
++            if (credential == null)
++                return new BnplVerifyResult { IsSuccess = false, Message = "پرداخت اعتباری برای این فروشگاه فعال نشده است." };
++
++            if (providerKey == DigipayProvider)
++                return await VerifyDigipayAsync(credential, storeId, transactionId, paymentToken, amountToman);
++
++            if (providerKey == SnapppayProvider)
++                return await VerifySnapppayAsync(credential, storeId, transactionId, paymentToken, amountToman);
++
++            return new BnplVerifyResult { IsSuccess = false, Message = "ارائه‌دهندهٔ BNPL ناشناخته است." };
++        }
++
++        // ────────────────────────── دیجی‌پی (رسمی) ──────────────────────────
++
++        private async Task<BnplStartResult> StartDigipayAsync(
++            BnplCredential credential, int storeId, int orderId, int customerId, decimal amountToman, string callbackUrl, string customerMobile)
++        {
++            var baseUrl = credential.Environment == "live" ? DigipayLiveBase : DigipayUatBase;
++            var accessToken = await GetDigipayTokenAsync(credential, baseUrl);
++            if (string.IsNullOrWhiteSpace(accessToken))
++                return new BnplStartResult { IsSuccess = false, Message = "احراز هویت در دیجی‌پی ناموفق بود." };
++
++            var client = _httpClientFactory.CreateClient("BnplGateway");
++            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++            client.DefaultRequestHeaders.Add("Agent", "WEB");
++            client.DefaultRequestHeaders.Add("Digipay-Version", "2022-02-02");
++
++            var providerId = $"{storeId}-{orderId}-{Guid.NewGuid():N}".Substring(0, 30);
++            var payload = new DigipayTicketRequest
++            {
++                CellNumber = customerMobile,
++                Amount = (long)(amountToman * 10), // ریال
++                ProviderId = providerId,
++                CallbackUrl = callbackUrl,
++                // BNPL → basketDetailsDto اجباری است (حداقل با یک آیتم)
++                BasketDetails = new DigipayBasketDetails
++                {
++                    BasketId = $"basket-{orderId}",
++                    Items = new List<DigipayBasketItem>
++                    {
++                        new()
++                        {
++                            SellerId = $"seller-{storeId}",
++                            SupplierId = $"seller-{storeId}",
++                            ProductCode = $"order-{orderId}",
++                            Brand = "IGBZ",
++                            ProductType = 3, // سرویس(خدمات) — برای سفارش‌های متنوع
++                            Count = 1,
++                            CategoryId = "General"
++                        }
++                    }
++                }
++            };
++
++            var response = await client.PostAsJsonAsync($"{baseUrl}/tickets/business?type=11", payload);
++            var rawBody = await response.Content.ReadAsStringAsync();
++
++            DigipayTicketResponse ticketResponse = null;
++            if (response.IsSuccessStatusCode)
++                ticketResponse = TryDeserialize<DigipayTicketResponse>(rawBody);
++
++            if (ticketResponse?.Result?.Status != 0 || string.IsNullOrWhiteSpace(ticketResponse.RedirectUrl))
++            {
++                return new BnplStartResult
++                {
++                    IsSuccess = false,
++                    Message = ticketResponse?.Result?.Message ?? "دیجی‌پی تیکت را رد کرد.",
++                    TransactionId = providerId
++                };
++            }
++
++            await SavePaymentRecordAsync(storeId, orderId, customerId, DigipayProvider, providerId, ticketResponse.Ticket, amountToman,
++                null, rawBody, BnplPaymentStatus.RedirectedToGateway);
++
++            return new BnplStartResult
++            {
++                IsSuccess = true,
++                RedirectUrl = ticketResponse.RedirectUrl,
++                TransactionId = providerId,
++                PaymentToken = ticketResponse.Ticket,
++                Message = "درخواست پرداخت اعتباری دیجی‌پی ثبت شد."
++            };
++        }
++
++        private async Task<BnplVerifyResult> VerifyDigipayAsync(
++            BnplCredential credential, int storeId, string transactionId, string paymentToken, decimal amountToman)
++        {
++            var baseUrl = credential.Environment == "live" ? DigipayLiveBase : DigipayUatBase;
++            var accessToken = await GetDigipayTokenAsync(credential, baseUrl);
++            if (string.IsNullOrWhiteSpace(accessToken))
++                return new BnplVerifyResult { IsSuccess = false, Message = "احراز هویت در دیجی‌پی ناموفق بود." };
++
++            var record = (await _paymentRepository.GetAllAsync(q =>
++                q.Where(r => r.StoreId == storeId && r.TransactionId == transactionId && r.ProviderKey == DigipayProvider))).FirstOrDefault();
++
++            if (record == null)
++                return new BnplVerifyResult { IsSuccess = false, Message = "رکورد پرداخت اعتباری یافت نشد." };
++
++            // جلوگیری از تایید مضاعف
++            if (record.Status == BnplPaymentStatus.Paid || record.Status == BnplPaymentStatus.Settled)
++                return new BnplVerifyResult { IsSuccess = true, AlreadyProcessed = true, Message = "این تراکنش قبلاً تایید شده است." };
++
++            var client = _httpClientFactory.CreateClient("BnplGateway");
++            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++
++            // type=13 → BNPL
++            var verifyResponse = await client.PostAsJsonAsync(
++                $"{baseUrl}/purchases/verify?type=13",
++                new { trackingCode = paymentToken, providerId = transactionId });
++            var rawBody = await verifyResponse.Content.ReadAsStringAsync();
++
++            DigipayVerifyResponse verify = null;
++            if (verifyResponse.IsSuccessStatusCode)
++                verify = TryDeserialize<DigipayVerifyResponse>(rawBody);
++
++            // موفقیت: result.status==0 و مبلغ منطبق (verify.amount به ریال)
++            var verified = verify?.Result?.Status == 0 && verify.Amount == (long)(amountToman * 10);
++
++            record.Status = verified ? BnplPaymentStatus.Paid : BnplPaymentStatus.Failed;
++            record.RawResponseJson = rawBody;
++            record.VerifiedOnUtc = DateTime.UtcNow;
++            await _paymentRepository.UpdateAsync(record);
++
++            return new BnplVerifyResult
++            {
++                IsSuccess = verified,
++                Message = verified ? "پرداخت اعتباری دیجی‌پی تایید شد." : (verify?.Result?.Message ?? "تایید پرداخت دیجی‌پی ناموفق بود."),
++                TrackingCode = verify?.TrackingCode
++            };
++        }
++
++        private async Task<string> GetDigipayTokenAsync(BnplCredential credential, string baseUrl)
++        {
++            var client = _httpClientFactory.CreateClient("BnplGateway");
++            var basicAuth = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{credential.ClientId}:{credential.ClientSecret}"));
++            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", basicAuth);
++
++            var form = new FormUrlEncodedContent(new Dictionary<string, string>
++            {
++                { "grant_type", "password" },
++                { "username", credential.Username },
++                { "password", credential.Password }
++            });
++
++            var response = await client.PostAsync($"{baseUrl}/oauth/token", form);
++            if (!response.IsSuccessStatusCode)
++                return null;
++
++            var dto = await response.Content.ReadFromJsonAsync<DigipayTokenResponse>();
++            return dto?.AccessToken;
++        }
++
++        // ────────────────────────── اسنپ‌پی (مرجع NopPlus) ──────────────────────────
++
++        private async Task<BnplEligibilityResult> CheckSnapppayEligibilityAsync(BnplCredential credential, decimal amountToman)
++        {
++            var client = await CreateSnapppayClientAsync(credential);
++            var response = await client.GetAsync($"{GetSnapppayBase(credential)}/api/online/offer/v1/eligible?amount={(long)(amountToman * 10)}");
++            var raw = await response.Content.ReadAsStringAsync();
++
++            var dto = TryDeserialize<SnapppayResultDto<SnapppayEligibleDto>>(raw);
++            var eligible = dto?.Successful == true && dto.Response?.Eligible == true;
++
++            return new BnplEligibilityResult
++            {
++                IsEligible = eligible,
++                ProviderKey = SnapppayProvider,
++                Message = dto?.ErrorData?.Message ?? (eligible ? "واجد شرایط پرداخت اقساطی اسنپ‌پی است." : "واجد شرایط نیست.")
++            };
++        }
++
++        private async Task<BnplStartResult> StartSnapppayAsync(
++            BnplCredential credential, int storeId, int orderId, int customerId, decimal amountToman, string callbackUrl, string customerMobile)
++        {
++            var client = await CreateSnapppayClientAsync(credential);
++            var transactionId = $"IGBZ-{storeId}-{orderId}-{Guid.NewGuid():N}".Substring(0, 40);
++
++            var request = new SnapppayPaymentRequestDto
++            {
++                TransactionId = transactionId,
++                Amount = (int)(amountToman * 10),
++                ReturnURL = callbackUrl,
++                PaymentMethodTypeDto = "INSTALLMENT",
++                Mobile = customerMobile,
++                CartList = new List<SnapppayCartList>
++                {
++                    new()
++                    {
++                        CartId = orderId,
++                        TotalAmount = (int)(amountToman * 10),
++                        IsShipmentIncluded = false,
++                        ShippingAmount = 0,
++                        IsTaxIncluded = false,
++                        TaxAmount = 0,
++                        CartItems = new List<SnapppayCartItem>
++                        {
++                            new()
++                            {
++                                Id = orderId,
++                                Name = $"سفارش {orderId}",
++                                Count = 1,
++                                Amount = (int)(amountToman * 10),
++                                Category = "General"
++                            }
++                        }
++                    }
++                }
++            };
++
++            var response = await client.PostAsJsonAsync($"{GetSnapppayBase(credential)}/api/online/payment/v1/token", request);
++            var raw = await response.Content.ReadAsStringAsync();
++            var dto = TryDeserialize<SnapppayResultDto<SnapppayPaymentTokenDto>>(raw);
++
++            if (dto?.Successful != true || string.IsNullOrWhiteSpace(dto.Response?.PaymentPageUrl))
++            {
++                return new BnplStartResult
++                {
++                    IsSuccess = false,
++                    Message = dto?.ErrorData?.Message ?? "اسنپ‌پی توکن را رد کرد.",
++                    TransactionId = transactionId
++                };
++            }
++
++            await SavePaymentRecordAsync(storeId, orderId, customerId, SnapppayProvider, transactionId, dto.Response.PaymentToken, amountToman,
++                raw, raw, BnplPaymentStatus.RedirectedToGateway);
++
++            return new BnplStartResult
++            {
++                IsSuccess = true,
++                RedirectUrl = dto.Response.PaymentPageUrl,
++                TransactionId = transactionId,
++                PaymentToken = dto.Response.PaymentToken,
++                Message = "درخواست پرداخت اقساطی اسنپ‌پی ثبت شد."
++            };
++        }
++
++        private async Task<BnplVerifyResult> VerifySnapppayAsync(
++            BnplCredential credential, int storeId, string transactionId, string paymentToken, decimal amountToman)
++        {
++            var record = (await _paymentRepository.GetAllAsync(q =>
++                q.Where(r => r.StoreId == storeId && r.TransactionId == transactionId && r.ProviderKey == SnapppayProvider))).FirstOrDefault();
++
++            if (record == null)
++                return new BnplVerifyResult { IsSuccess = false, Message = "رکورد پرداخت اسنپ‌پی یافت نشد." };
++
++            if (record.Status == BnplPaymentStatus.Paid || record.Status == BnplPaymentStatus.Settled)
++                return new BnplVerifyResult { IsSuccess = true, AlreadyProcessed = true, Message = "این تراکنش قبلاً تایید شده است." };
++
++            var client = await CreateSnapppayClientAsync(credential);
++            var verifyToken = !string.IsNullOrWhiteSpace(paymentToken) ? paymentToken : record.PaymentToken;
++
++            var response = await client.PostAsJsonAsync(
++                $"{GetSnapppayBase(credential)}/api/online/payment/v1/verify",
++                new { paymentToken = verifyToken });
++            var raw = await response.Content.ReadAsStringAsync();
++            var dto = TryDeserialize<SnapppayResultDto<SnapppayVerifyDto>>(raw);
++
++            var verified = dto?.Successful == true;
++
++            record.Status = verified ? BnplPaymentStatus.Paid : BnplPaymentStatus.Failed;
++            record.RawResponseJson = raw;
++            record.VerifiedOnUtc = DateTime.UtcNow;
++            await _paymentRepository.UpdateAsync(record);
++
++            return new BnplVerifyResult
++            {
++                IsSuccess = verified,
++                Message = verified ? "پرداخت اقساطی اسنپ‌پی تایید شد." : (dto?.ErrorData?.Message ?? "تایید پرداخت اسنپ‌پی ناموفق بود."),
++                TrackingCode = dto?.Response?.TransactionId
++            };
++        }
++
++        private async Task<HttpClient> CreateSnapppayClientAsync(BnplCredential credential)
++        {
++            var client = _httpClientFactory.CreateClient("BnplGateway");
++
++            var basicAuth = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{credential.ClientId}:{credential.ClientSecret}"));
++            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", basicAuth);
++
++            var tokenResponse = await client.PostAsync(
++                $"{GetSnapppayBase(credential)}/api/online/v1/oauth/token",
++                new FormUrlEncodedContent(new Dictionary<string, string>
++                {
++                    { "grant_type", "password" },
++                    { "scope", "online-merchant" },
++                    { "username", credential.Username },
++                    { "password", credential.Password }
++                }));
++
++            if (tokenResponse.IsSuccessStatusCode)
++            {
++                var tokenDto = await tokenResponse.Content.ReadFromJsonAsync<SnapppayTokenDto>();
++                if (tokenDto?.AccessToken != null)
++                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", tokenDto.AccessToken);
++            }
++
++            return client;
++        }
++
++        private static string GetSnapppayBase(BnplCredential credential) =>
++            !string.IsNullOrWhiteSpace(credential.BaseUrlOverride)
++                ? credential.BaseUrlOverride.TrimEnd('/')
++                : SnapppayDefaultBase;
++
++        private async Task<BnplCredential> GetActiveCredentialAsync(int storeId, string providerKey)
++        {
++            var all = await _credentialRepository.GetAllAsync(q =>
++                q.Where(c => c.StoreId == storeId && c.ProviderKey == providerKey && c.IsActive));
++            return all.FirstOrDefault();
++        }
++
++        private async Task SavePaymentRecordAsync(
++            int storeId, int orderId, int customerId, string providerKey, string transactionId, string paymentToken,
++            decimal amountToman, string rawRequest, string rawResponse, BnplPaymentStatus status)
++        {
++            await _paymentRepository.InsertAsync(new BnplPaymentRecord
++            {
++                StoreId = storeId,
++                OrderId = orderId,
++                CustomerId = customerId,
++                ProviderKey = providerKey,
++                TransactionId = transactionId,
++                PaymentToken = paymentToken,
++                AmountToman = amountToman,
++                Status = status,
++                RawRequestJson = rawRequest,
++                RawResponseJson = rawResponse,
++                CreatedOnUtc = DateTime.UtcNow
++            });
++        }
++
++        private static T TryDeserialize<T>(string json)
++        {
++            try
++            {
++                return string.IsNullOrWhiteSpace(json) ? default : JsonSerializer.Deserialize<T>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
++            }
++            catch
++            {
++                return default;
++            }
++        }
++    }
++
++    // ────────────────────────── DTO های دیجی‌پی ──────────────────────────
++
++    internal class DigipayTokenResponse
++    {
++        [JsonPropertyName("access_token")] public string AccessToken { get; set; }
++        [JsonPropertyName("refresh_token")] public string RefreshToken { get; set; }
++        [JsonPropertyName("expires_in")] public int ExpiresIn { get; set; }
++    }
++
++    internal class DigipayTicketRequest
++    {
++        [JsonPropertyName("cellNumber")] public string CellNumber { get; set; }
++        [JsonPropertyName("amount")] public long Amount { get; set; }
++        [JsonPropertyName("providerId")] public string ProviderId { get; set; }
++        [JsonPropertyName("callbackUrl")] public string CallbackUrl { get; set; }
++        [JsonPropertyName("basketDetailsDto")] public DigipayBasketDetails BasketDetails { get; set; }
++    }
++
++    internal class DigipayBasketDetails
++    {
++        [JsonPropertyName("basketId")] public string BasketId { get; set; }
++        [JsonPropertyName("items")] public List<DigipayBasketItem> Items { get; set; }
++    }
++
++    internal class DigipayBasketItem
++    {
++        [JsonPropertyName("sellerId")] public string SellerId { get; set; }
++        [JsonPropertyName("supplierId")] public string SupplierId { get; set; }
++        [JsonPropertyName("productCode")] public string ProductCode { get; set; }
++        [JsonPropertyName("brand")] public string Brand { get; set; }
++        [JsonPropertyName("productType")] public int ProductType { get; set; }
++        [JsonPropertyName("count")] public int Count { get; set; }
++        [JsonPropertyName("categoryId")] public string CategoryId { get; set; }
++    }
++
++    internal class DigipayTicketResponse
++    {
++        [JsonPropertyName("result")] public DigipayResult Result { get; set; }
++        [JsonPropertyName("ticket")] public string Ticket { get; set; }
++        [JsonPropertyName("redirectUrl")] public string RedirectUrl { get; set; }
++    }
++
++    internal class DigipayVerifyResponse
++    {
++        [JsonPropertyName("result")] public DigipayResult Result { get; set; }
++        [JsonPropertyName("trackingCode")] public string TrackingCode { get; set; }
++        [JsonPropertyName("providerId")] public string ProviderId { get; set; }
++        [JsonPropertyName("amount")] public long Amount { get; set; }
++        [JsonPropertyName("paymentGateway")] public int PaymentGateway { get; set; }
++        [JsonPropertyName("additionalInfo")] public DigipayVerifyAdditionalInfo AdditionalInfo { get; set; }
++    }
++
++    internal class DigipayResult
++    {
++        [JsonPropertyName("status")] public int Status { get; set; }
++        [JsonPropertyName("message")] public string Message { get; set; }
++        [JsonPropertyName("level")] public string Level { get; set; }
++    }
++
++    internal class DigipayVerifyAdditionalInfo
++    {
++        [JsonPropertyName("prepaymentAmount")] public long PrepaymentAmount { get; set; }
++        [JsonPropertyName("cashAmount")] public long CashAmount { get; set; }
++        [JsonPropertyName("creditAmount")] public long CreditAmount { get; set; }
++        [JsonPropertyName("instantFinalization")] public bool InstantFinalization { get; set; }
++    }
++
++    // ────────────────────────── DTO های اسنپ‌پی (مرجع NopPlus) ──────────────────────────
++
++    internal class SnapppayTokenDto
++    {
++        [JsonPropertyName("access_token")] public string AccessToken { get; set; }
++        [JsonPropertyName("token_type")] public string TokenType { get; set; }
++        [JsonPropertyName("expires_in")] public int ExpiresIn { get; set; }
++    }
++
++    internal class SnapppayPaymentRequestDto
++    {
++        [JsonPropertyName("transactionId")] public string TransactionId { get; set; }
++        [JsonPropertyName("amount")] public int Amount { get; set; }
++        [JsonPropertyName("returnURL")] public string ReturnURL { get; set; }
++        [JsonPropertyName("paymentMethodTypeDto")] public string PaymentMethodTypeDto { get; set; }
++        [JsonPropertyName("cartList")] public List<SnapppayCartList> CartList { get; set; }
++        [JsonPropertyName("discountAmount")] public int DiscountAmount { get; set; }
++        [JsonPropertyName("externalSourceAmount")] public int ExternalSourceAmount { get; set; }
++        [JsonPropertyName("mobile")] public string Mobile { get; set; }
++    }
++
++    internal class SnapppayCartList
++    {
++        [JsonPropertyName("cartId")] public int CartId { get; set; }
++        [JsonPropertyName("cartItems")] public List<SnapppayCartItem> CartItems { get; set; }
++        [JsonPropertyName("totalAmount")] public int TotalAmount { get; set; }
++        [JsonPropertyName("isShipmentIncluded")] public bool IsShipmentIncluded { get; set; }
++        [JsonPropertyName("shippingAmount")] public int ShippingAmount { get; set; }
++        [JsonPropertyName("isTaxIncluded")] public bool IsTaxIncluded { get; set; }
++        [JsonPropertyName("taxAmount")] public int TaxAmount { get; set; }
++    }
++
++    internal class SnapppayCartItem
++    {
++        [JsonPropertyName("id")] public int Id { get; set; }
++        [JsonPropertyName("name")] public string Name { get; set; }
++        [JsonPropertyName("count")] public int Count { get; set; }
++        [JsonPropertyName("amount")] public int Amount { get; set; }
++        [JsonPropertyName("category")] public string Category { get; set; }
++    }
++
++    internal class SnapppayResultDto<T>
++    {
++        [JsonPropertyName("successful")] public bool Successful { get; set; }
++        [JsonPropertyName("response")] public T Response { get; set; }
++        [JsonPropertyName("errorData")] public SnapppayErrorData ErrorData { get; set; }
++    }
++
++    internal class SnapppayErrorData
++    {
++        [JsonPropertyName("errorCode")] public string ErrorCode { get; set; }
++        [JsonPropertyName("message")] public string Message { get; set; }
++    }
++
++    internal class SnapppayEligibleDto
++    {
++        [JsonPropertyName("eligible")] public bool Eligible { get; set; }
++        [JsonPropertyName("title_message")] public string TitleMessage { get; set; }
++        [JsonPropertyName("description")] public string Description { get; set; }
++    }
++
++    internal class SnapppayPaymentTokenDto
++    {
++        [JsonPropertyName("paymentToken")] public string PaymentToken { get; set; }
++        [JsonPropertyName("paymentPageUrl")] public string PaymentPageUrl { get; set; }
++    }
++
++    internal class SnapppayVerifyDto
++    {
++        [JsonPropertyName("transactionId")] public string TransactionId { get; set; }
++    }
++}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+index b1470ce..3761209 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+@@ -44,13 +44,16 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+     {
+         private readonly IRepository<LaunchChecklistItemState> _stateRepository;
+         private readonly ITenantIntegrationCredentialService _credentialService;
++        private readonly IRepository<Domain.BnplCredential> _bnplCredentialRepository;
+ 
+         public LaunchChecklistService(
+             IRepository<LaunchChecklistItemState> stateRepository,
+-            ITenantIntegrationCredentialService credentialService)
++            ITenantIntegrationCredentialService credentialService,
++            IRepository<Domain.BnplCredential> bnplCredentialRepository)
+         {
+             _stateRepository = stateRepository;
+             _credentialService = credentialService;
++            _bnplCredentialRepository = bnplCredentialRepository;
+         }
+ 
+         /// <summary>تعریف استاتیک آیتم‌ها — عنوان، توضیح، راهنما و نوع تشخیص.</summary>
+@@ -203,6 +206,12 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+                 credentials.Where(c => c.IsActive).Select(c => c.ProviderKey),
+                 StringComparer.OrdinalIgnoreCase);
+ 
++            // برای BNPL، وضعیت از جدول BnplCredential خوانده می‌شود
++            var bnplCredentials = await _bnplCredentialRepository.GetAllAsync(q => q.Where(c => c.StoreId == storeId && c.IsActive));
++            var activeBnplKeys = new HashSet<string>(
++                bnplCredentials.Select(c => c.ProviderKey),
++                StringComparer.OrdinalIgnoreCase);
++
+             var result = new List<LaunchChecklistItemDto>();
+             foreach (var item in staticItems)
+             {
+@@ -227,8 +236,8 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+                         "payir" => activeProviderKeys.Contains("parbad.payir") || activeProviderKeys.Contains("payir"),
+                         "instagram" => activeProviderKeys.Contains("instagram.graph"),
+                         "kavenegar" => activeProviderKeys.Contains("kavenegar"),
+-                        "digipay" => activeProviderKeys.Contains("digipay") || activeProviderKeys.Contains("parbad.digipay"),
+-                        "snapppay" => activeProviderKeys.Contains("snapppay"),
++                        "digipay" => activeProviderKeys.Contains("digipay") || activeProviderKeys.Contains("parbad.digipay") || activeBnplKeys.Contains("digipay"),
++                        "snapppay" => activeProviderKeys.Contains("snapppay") || activeBnplKeys.Contains("snapppay"),
+                         "virtual_tryon" => activeProviderKeys.Contains("virtual-tryon"),
+                         _ => false
+                     };
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/SnappPayBnplGateway.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/SnappPayBnplGateway.cs
+deleted file mode 100644
+index 7063535..0000000
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/SnappPayBnplGateway.cs
++++ /dev/null
+@@ -1,141 +0,0 @@
+-namespace Nop.Plugin.Misc.MultiTenantStores.Services
+-{
+-    using System;
+-    using System.Collections.Generic;
+-    using System.Net.Http;
+-    using System.Net.Http.Json;
+-    using System.Text.Json.Serialization;
+-    using System.Threading.Tasks;
+-
+-    /// <summary>
+-    /// یکپارچه‌سازی اعتبارسنجی اقساط (SnappPay/Digipay/Tara BNPL) (.NET 9)
+-    /// نکته: استعلام امکان‌سنجی اعتبار مشتری («آیا این مشتری صلاحیت اعتباری این مبلغ را دارد؟»)
+-    /// همیشه باید از سرویس اعتبارسنجی واقعی بانک/فینتک استعلام شود؛ محاسبه محلی صرفاً برای
+-    /// نمایش جدول اقساط پیشنهادی است و به‌تنهایی هرگز نباید معیار تایید نهایی خرید اعتباری باشد.
+-    /// </summary>
+-    public class SnappPayBnplGateway
+-    {
+-        private readonly HttpClient _httpClient;
+-
+-        public SnappPayBnplGateway(HttpClient httpClient)
+-        {
+-            _httpClient = httpClient;
+-        }
+-
+-        public async Task<BnplEligibilityResult> CheckEligibilityAndInstallmentsAsync(string merchantApiKey, decimal cartTotalToman, string customerNationalId, string customerMobile)
+-        {
+-            if (string.IsNullOrWhiteSpace(merchantApiKey))
+-            {
+-                return new BnplEligibilityResult
+-                {
+-                    IsEligible = false,
+-                    Message = "کلید API اسنپ‌پِی/دیجی‌پِی برای این فروشگاه فعال نشده است."
+-                };
+-            }
+-
+-            if (string.IsNullOrWhiteSpace(customerNationalId) || string.IsNullOrWhiteSpace(customerMobile))
+-            {
+-                return new BnplEligibilityResult
+-                {
+-                    IsEligible = false,
+-                    Message = "برای استعلام اعتبار BNPL، کدملی و شماره موبایل مشتری الزامی است."
+-                };
+-            }
+-
+-            _httpClient.DefaultRequestHeaders.Remove("Authorization");
+-            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {merchantApiKey}");
+-
+-            SnappPayEligibilityApiResponse apiResponse;
+-            try
+-            {
+-                var response = await _httpClient.PostAsJsonAsync("https://api.snapppay.local/v1/eligibility/check", new SnappPayEligibilityApiRequest
+-                {
+-                    NationalId = customerNationalId,
+-                    Mobile = customerMobile,
+-                    AmountRials = cartTotalToman * 10
+-                });
+-
+-                if (!response.IsSuccessStatusCode)
+-                {
+-                    return new BnplEligibilityResult
+-                    {
+-                        IsEligible = false,
+-                        Message = $"سرویس اعتبارسنجی BNPL درخواست را رد کرد (کد {(int)response.StatusCode})."
+-                    };
+-                }
+-
+-                apiResponse = await response.Content.ReadFromJsonAsync<SnappPayEligibilityApiResponse>();
+-            }
+-            catch (HttpRequestException ex)
+-            {
+-                return new BnplEligibilityResult
+-                {
+-                    IsEligible = false,
+-                    Message = $"ارتباط با سرویس اعتبارسنجی BNPL برقرار نشد: {ex.Message}"
+-                };
+-            }
+-
+-            if (apiResponse == null || !apiResponse.Eligible)
+-            {
+-                return new BnplEligibilityResult
+-                {
+-                    IsEligible = false,
+-                    Message = apiResponse?.RejectionReason ?? "مشتری صلاحیت لازم برای خرید اقساطی این مبلغ را ندارد."
+-                };
+-            }
+-
+-            var installmentCount = Math.Max(1, apiResponse.ApprovedInstallmentCount);
+-            var installmentAmount = Math.Round(cartTotalToman / installmentCount, 0);
+-            var installments = new List<BnplInstallmentItem>();
+-            for (var i = 0; i < installmentCount; i++)
+-            {
+-                installments.Add(new BnplInstallmentItem
+-                {
+-                    Title = i == 0 ? "قسط اول (امروز هنگام خرید)" : $"قسط {i + 1}",
+-                    Amount = installmentAmount,
+-                    DueDateDescription = i == 0 ? "پرداخت آنی" : $"{i} ماه آینده"
+-                });
+-            }
+-
+-            return new BnplEligibilityResult
+-            {
+-                IsEligible = true,
+-                ApprovalReferenceId = apiResponse.ApprovalReferenceId,
+-                MonthlyInstallmentAmount = installmentAmount,
+-                Installments = installments,
+-                Message = $"امکان پرداخت اقساطی {installmentCount} قسطه برای این سبد خرید تایید شد."
+-            };
+-        }
+-    }
+-
+-    public class BnplEligibilityResult
+-    {
+-        public bool IsEligible { get; set; }
+-        public string ApprovalReferenceId { get; set; }
+-        public decimal MonthlyInstallmentAmount { get; set; }
+-        public List<BnplInstallmentItem> Installments { get; set; }
+-        public string Message { get; set; }
+-    }
+-
+-    public class BnplInstallmentItem
+-    {
+-        public string Title { get; set; }
+-        public decimal Amount { get; set; }
+-        public string DueDateDescription { get; set; }
+-    }
+-
+-    internal class SnappPayEligibilityApiRequest
+-    {
+-        [JsonPropertyName("nationalId")] public string NationalId { get; set; }
+-        [JsonPropertyName("mobile")] public string Mobile { get; set; }
+-        [JsonPropertyName("amountRials")] public decimal AmountRials { get; set; }
+-    }
+-
+-    internal class SnappPayEligibilityApiResponse
+-    {
+-        [JsonPropertyName("eligible")] public bool Eligible { get; set; }
+-        [JsonPropertyName("approvedInstallmentCount")] public int ApprovedInstallmentCount { get; set; }
+-        [JsonPropertyName("approvalReferenceId")] public string ApprovalReferenceId { get; set; }
+-        [JsonPropertyName("rejectionReason")] public string RejectionReason { get; set; }
+-    }
+-}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/BnplAdmin/Edit.cshtml b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/BnplAdmin/Edit.cshtml
+new file mode 100644
+index 0000000..62e11e9
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/BnplAdmin/Edit.cshtml
+@@ -0,0 +1,88 @@
++@model Nop.Plugin.Misc.MultiTenantStores.Domain.BnplCredential
++
++@{
++    Layout = "_AdminLayout";
++    ViewBag.Title = "تنظیمات اعتبارنامهٔ BNPL";
++}
++
++<div class="content-header clearfix">
++    <h1 class="float-left">تنظیمات BNPL</h1>
++    <div class="float-right">
++        <a asp-action="Index" class="btn btn-default">بازگشت</a>
++    </div>
++</div>
++
++<section class="content">
++    <div class="container-fluid">
++        <form asp-action="Save" method="post">
++            <div class="card card-default">
++                <div class="card-body">
++                    @if (Model?.Id > 0)
++                    {
++                        <input type="hidden" asp-for="Id" />
++                    }
++
++                    <div class="form-group row">
++                        <label class="col-sm-3 col-form-label">ارائه‌دهنده</label>
++                        <div class="col-sm-9">
++                            <select asp-for="ProviderKey" class="form-control" required>
++                                <option value="">— انتخاب کنید —</option>
++                                <option value="digipay">دیجی‌پی</option>
++                                <option value="snapppay">اسنپ‌پی</option>
++                            </select>
++                        </div>
++                    </div>
++
++                    <div class="form-group row">
++                        <label class="col-sm-3 col-form-label">محیط</label>
++                        <div class="col-sm-9">
++                            <select asp-for="Environment" class="form-control">
++                                <option value="uat">UAT (تستی)</option>
++                                <option value="live">Live (عملیاتی)</option>
++                            </select>
++                            <small class="form-text text-muted">مخصوص دیجی‌پی. برای اسنپ‌پی از BaseUrl استفاده می‌شود.</small>
++                        </div>
++                    </div>
++
++                    <div class="form-group row">
++                        <label class="col-sm-3 col-form-label">Username</label>
++                        <div class="col-sm-9"><input asp-for="Username" class="form-control" /></div>
++                    </div>
++
++                    <div class="form-group row">
++                        <label class="col-sm-3 col-form-label">Password</label>
++                        <div class="col-sm-9"><input asp-for="Password" type="password" class="form-control" /></div>
++                    </div>
++
++                    <div class="form-group row">
++                        <label class="col-sm-3 col-form-label">Client ID</label>
++                        <div class="col-sm-9"><input asp-for="ClientId" class="form-control" /></div>
++                    </div>
++
++                    <div class="form-group row">
++                        <label class="col-sm-3 col-form-label">Client Secret</label>
++                        <div class="col-sm-9"><input asp-for="ClientSecret" type="password" class="form-control" /></div>
++                    </div>
++
++                    <div class="form-group row">
++                        <label class="col-sm-3 col-form-label">BaseUrl (اختیاری)</label>
++                        <div class="col-sm-9">
++                            <input asp-for="BaseUrlOverride" class="form-control" placeholder="https://..." />
++                            <small class="form-text text-muted">برای اسنپ‌پی؛ اگر خالی بماند، پیش‌فرض Staging استفاده می‌شود.</small>
++                        </div>
++                    </div>
++
++                    <div class="form-group row">
++                        <label class="col-sm-3 col-form-label">فعال</label>
++                        <div class="col-sm-9">
++                            <input asp-for="IsActive" type="checkbox" class="form-check-input" />
++                        </div>
++                    </div>
++                </div>
++                <div class="card-footer">
++                    <button type="submit" class="btn btn-primary">ذخیره</button>
++                </div>
++            </div>
++        </form>
++    </div>
++</section>
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/BnplAdmin/Index.cshtml b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/BnplAdmin/Index.cshtml
+new file mode 100644
+index 0000000..fef8123
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/BnplAdmin/Index.cshtml
+@@ -0,0 +1,74 @@
++@model System.Collections.Generic.IList<Nop.Plugin.Misc.MultiTenantStores.Domain.BnplCredential>
++
++@{
++    Layout = "_AdminLayout";
++    ViewBag.Title = "پرداخت اعتباری (دیجی‌پی / اسنپ‌پی)";
++}
++
++<div class="content-header clearfix">
++    <h1 class="float-left">
++        پرداخت اعتباری (BNPL)
++        <small><i class="fas fa-credit-card"></i> دیجی‌پی / اسنپ‌پی</small>
++    </h1>
++    <div class="float-right">
++        <a asp-action="Edit" class="btn bg-blue">
++            <i class="fas fa-plus-square"></i> افزودن جدید
++        </a>
++    </div>
++</div>
++
++<section class="content">
++    <div class="container-fluid">
++        <div class="card card-default">
++            <div class="card-body">
++                <table class="table table-bordered table-hover">
++                    <thead>
++                        <tr>
++                            <th>ارائه‌دهنده</th>
++                            <th>محیط</th>
++                            <th>وضعیت</th>
++                            <th>عملیات</th>
++                        </tr>
++                    </thead>
++                    <tbody>
++                        @if (!Model.Any())
++                        {
++                            <tr><td colspan="4" class="text-center">هنوز اعتبارنامه‌ای ثبت نشده است.</td></tr>
++                        }
++                        @foreach (var cred in Model)
++                        {
++                            <tr>
++                                <td>@(cred.ProviderKey == "digipay" ? "دیجی‌پی" : cred.ProviderKey == "snapppay" ? "اسنپ‌پی" : cred.ProviderKey)</td>
++                                <td>@(cred.Environment ?? "-")</td>
++                                <td>
++                                    @if (cred.IsActive)
++                                    {
++                                        <span class="badge badge-success">فعال</span>
++                                    }
++                                    else
++                                    {
++                                        <span class="badge badge-secondary">غیرفعال</span>
++                                    }
++                                </td>
++                                <td>
++                                    <a asp-action="Edit" asp-route-id="@cred.Id" class="btn btn-sm btn-info">ویرایش</a>
++                                    <form asp-action="Delete" asp-route-id="@cred.Id" method="post" style="display:inline-block;" onsubmit="return confirm('حذف شود؟');">
++                                        <button type="submit" class="btn btn-sm btn-danger">حذف</button>
++                                    </form>
++                                </td>
++                            </tr>
++                        }
++                    </tbody>
++                </table>
++
++                <div class="mt-3">
++                    <h5>راهنما</h5>
++                    <ul class="small">
++                        <li><b>دیجی‌پی:</b> اعتبارنامه از <a href="https://merchant.mydigipay.com" target="_blank" rel="noopener">merchant.mydigipay.com</a> — محیط UAT برای تست، LIVE برای عملیاتی.</li>
++                        <li><b>اسنپ‌پی:</b> پس از امضای قرارداد، مستندات محرمانه + اعتبارنامه ارسال می‌شود؛ BaseUrl پیش‌فرض Staging است و در صورت نیاز می‌توانید آدرس اختصاصی بدهید.</li>
++                    </ul>
++                </div>
++            </div>
++        </div>
++    </div>
++</section>
+-- 
+2.39.5
+
