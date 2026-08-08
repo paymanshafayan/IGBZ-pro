@@ -57,4 +57,6 @@ dotnet test IGBZ.sln
 | 3 | Storefront تننت (Next.js) | ✅ |
 | 4-5 | Web API ادمین + اپ ادمین Flutter + اپ مشتری Flutter + Deep Link | ✅ |
 | 6 | Integration Provider Framework + پرداخت واقعی (pay.ir/BNPL/رمز) | ✅ |
-| 7+ | اینستاگرام، مارکت‌پلیس، AI، LMS | ⏳ |
+| 7 | دستیار اینستاگرام | ⏳ |
+| 8 | مارکت‌پلیس (ترب/دیجی‌کالا/دیوار) + لجستیک | ✅ |
+| 9+ | استودیوی AI، LMS | ⏳ |

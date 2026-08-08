@@ -51,6 +51,11 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddHttpClient("Digipay");
         services.AddHttpClient("Snapppay");
 
+        // HttpClientهای مارکت‌پلیس و لجستیک
+        services.AddHttpClient("DigikalaOpenApi");
+        services.AddHttpClient("KenarDivarApi");
+        services.AddHttpClient("TapinPost");
+
         // Repository های عمومی (باز) + تننت‌محور
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
         services.AddScoped(typeof(ITenantScopedRepository<>), typeof(TenantScopedRepository<>));

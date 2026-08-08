@@ -5,6 +5,8 @@ using IGBZ.Application.Auth;
 using IGBZ.Application.BNPL;
 using IGBZ.Application.Catalog;
 using IGBZ.Application.Discounts;
+using IGBZ.Application.Logistics;
+using IGBZ.Application.Marketplace;
 using IGBZ.Application.Orders;
 using IGBZ.Application.Payments;
 using IGBZ.Application.Pricing;
@@ -53,6 +55,10 @@ public static class ApplicationServiceCollectionExtensions
 
         // BNPL
         services.AddScoped<IBnplService, BnplService>();
+
+        // مارکت‌پلیس + لجستیک
+        services.AddScoped<IMarketplaceService, MarketplaceService>();
+        services.AddScoped<ILogisticsService, LogisticsService>();
 
         return services;
     }
