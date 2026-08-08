@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getCart, clearCart, cartTotal, type CartLine } from "@/lib/cart";
-import { createOrder } from "@/lib/api";
+import { createOrder, getStoredCustomerId } from "@/lib/api";
+import Link from "next/link";
 
 interface CheckoutState {
   status: "idle" | "submitting" | "success" | "error";
@@ -19,6 +20,7 @@ export default function CheckoutPage() {
 
   useEffect(() => {
     setCart(getCart());
+    setCustomerId(getStoredCustomerId() ?? "");
   }, []);
 
   const total = cartTotal(cart);
@@ -30,7 +32,7 @@ export default function CheckoutPage() {
 
     try {
       const result = await createOrder({
-        // در فاز ۴ (احراز هویت در Storefront) مقدار واقعی می‌شود؛ فعلاً یک شناسهٔ ثابت توسعه
+        // مشتری واردشده → customerId واقعی؛ مهمان → "guest"
         customerId: customerId.trim() || "guest",
         lines: cart.map((c) => ({
           productId: c.productId,

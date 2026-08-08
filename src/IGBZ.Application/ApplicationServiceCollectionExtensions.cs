@@ -1,5 +1,6 @@
 namespace IGBZ.Application;
 
+using IGBZ.Application.Admin;
 using IGBZ.Application.Auth;
 using IGBZ.Application.Catalog;
 using IGBZ.Application.Discounts;
@@ -44,6 +45,10 @@ public static class ApplicationServiceCollectionExtensions
 
         // کاتالوگ عمومی (Storefront)
         services.AddScoped<ICatalogService, CatalogService>();
+
+        // ادمین تننت (محصولات + داشبورد)
+        services.AddScoped<IAdminProductService, AdminProductService>();
+        services.AddScoped<IAdminDashboardService, AdminDashboardService>();
 
         return services;
     }

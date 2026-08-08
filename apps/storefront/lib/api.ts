@@ -35,6 +35,86 @@ const TENANT_HEADER = process.env.NEXT_PUBLIC_TENANT_ID
   ? { "X-Tenant-Id": process.env.NEXT_PUBLIC_TENANT_ID }
   : {};
 
+// ─────────────────────────────────────────────────────────────
+// توکن JWT مشتری — ذخیره در localStorage (کلاینت)
+// ─────────────────────────────────────────────────────────────
+
+const TOKEN_KEY = "igbz-token";
+const CUSTOMER_ID_KEY = "igbz-customer-id";
+
+export function getStoredToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(TOKEN_KEY);
+}
+
+export function getStoredCustomerId(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(CUSTOMER_ID_KEY);
+}
+
+export function storeSession(token: string, customerId: string): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(TOKEN_KEY, token);
+    window.localStorage.setItem(CUSTOMER_ID_KEY, customerId);
+  }
+}
+
+export function clearSession(): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(CUSTOMER_ID_KEY);
+  }
+}
+
+export interface AuthResult {
+  success: boolean;
+  accessToken?: string;
+  customerId?: string;
+  message?: string;
+}
+
+export async function registerCustomer(
+  email: string,
+  password: string,
+  phone?: string
+): Promise<AuthResult> {
+  try {
+    const res = await fetch(`/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TENANT_HEADER },
+      body: JSON.stringify({ email, password, phone, isTenantOwner: false }),
+      cache: "no-store"
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      return { success: false, message: data?.message ?? "خطا در ثبت‌نام" };
+    }
+    storeSession(data.accessToken, data.customerId);
+    return { success: true, accessToken: data.accessToken, customerId: data.customerId };
+  } catch {
+    return { success: false, message: "خطای شبکه" };
+  }
+}
+
+export async function loginCustomer(email: string, password: string): Promise<AuthResult> {
+  try {
+    const res = await fetch(`/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TENANT_HEADER },
+      body: JSON.stringify({ email, password }),
+      cache: "no-store"
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      return { success: false, message: data?.message ?? "خطا در ورود" };
+    }
+    storeSession(data.accessToken, data.customerId);
+    return { success: true, accessToken: data.accessToken, customerId: data.customerId };
+  } catch {
+    return { success: false, message: "خطای شبکه" };
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,

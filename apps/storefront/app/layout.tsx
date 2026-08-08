@@ -18,6 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Link>
             <nav className="nav-links">
               <Link href="/">محصولات</Link>
+              <Link href="/login">ورود</Link>
               <Link href="/cart">
                 سبد خرید <span className="cart-badge" id="cart-count">۰</span>
               </Link>

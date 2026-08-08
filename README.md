@@ -21,9 +21,11 @@ src/
   IGBZ.Api/             Web API واحد + Middleware تننت + Controllers
 apps/
   storefront/           فروشگاه تننت (Next.js + React 19)
+  admin_app/            اپ ادمین تننت (Flutter)
+  customer_app/         اپ مشتریان (Flutter + Deep Link)
 tests/
   IGBZ.Domain.Tests/        ماشین‌حالت، Money، موجودی
-  IGBZ.Application.Tests/   پایپلاین قیمت، تخفیف، کیف‌پول، کاتالوگ، Provisioning
+  IGBZ.Application.Tests/   پایپلاین قیمت، تخفیف، کیف‌پول، کاتالوگ، Provisioning، ادمین
   IGBZ.Infrastructure.Tests/ جداسازی تننت واقعی (Mongo2Go)، end-to-end
 ```
 
@@ -53,4 +55,5 @@ dotnet test IGBZ.sln
 | 1 | هستهٔ موتور تجارت + چندمستأجری | ✅ |
 | 2 | Web API واحد + JWT + Provisioning + درگاه تست | ✅ |
 | 3 | Storefront تننت (Next.js) | ✅ |
-| 4+ | اپ‌ها، پرداخت واقعی، اینستاگرام، AI، LMS | ⏳ |
+| 4-5 | Web API ادمین + اپ ادمین Flutter + اپ مشتری Flutter + Deep Link | ✅ |
+| 6+ | پرداخت واقعی، اینستاگرام، AI، LMS | ⏳ |

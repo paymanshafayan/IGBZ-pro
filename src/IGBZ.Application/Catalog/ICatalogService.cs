@@ -9,6 +9,9 @@ public class ProductListDto
     public string? ImageUrl { get; init; }
     public decimal PriceToman { get; init; }
     public decimal? OldPriceToman { get; init; }
+
+    /// <summary>فقط برای پنل ادمین — وضعیت انتشار (در کاتالوگ عمومی همیشه true است).</summary>
+    public bool IsPublished { get; init; } = true;
 }
 
 /// <summary>جزئیات کامل محصول برای صفحهٔ محصول.</summary>

@@ -46,7 +46,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    // فقط مالک/ادمین تننت (توکن با ادعای isTenantOwner=True)
+    options.AddPolicy("TenantOwner", policy => policy.RequireClaim("isTenantOwner", "True"));
+});
 builder.Services.AddControllers();
 
 var app = builder.Build();
