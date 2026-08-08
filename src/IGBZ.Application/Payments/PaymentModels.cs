@@ -20,6 +20,9 @@ public class PaymentGatewayVerifyRequest
 {
     public string TrackingNumber { get; init; } = string.Empty;
     public decimal AmountToman { get; init; }
+
+    /// <summary>اعتبارنامه/کلید درگاه (از اعتبارنامهٔ تننت) — در Verify هم لازم است.</summary>
+    public string? Extra { get; init; }
 }
 
 public class PaymentGatewayVerifyResult

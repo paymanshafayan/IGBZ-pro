@@ -16,7 +16,9 @@ public class PaymentServiceTests
         _tenantContext.Set("t1");
         var ledger = new FakeTenantScopedRepository<PaymentTransactionLedger>(_tenantContext);
         var gateway = new FakePaymentGateway("fake");
-        var service = new PaymentService(ledger, new[] { gateway });
+        var credentials = new FakeCredentialRepository(_tenantContext);
+        credentials.AddActiveCredential("fake", "test-api-key");
+        var service = new PaymentService(ledger, credentials, new[] { gateway });
         return (service, ledger, gateway);
     }
 

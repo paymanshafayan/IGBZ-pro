@@ -2,6 +2,7 @@ namespace IGBZ.Application;
 
 using IGBZ.Application.Admin;
 using IGBZ.Application.Auth;
+using IGBZ.Application.BNPL;
 using IGBZ.Application.Catalog;
 using IGBZ.Application.Discounts;
 using IGBZ.Application.Orders;
@@ -49,6 +50,9 @@ public static class ApplicationServiceCollectionExtensions
         // ادمین تننت (محصولات + داشبورد)
         services.AddScoped<IAdminProductService, AdminProductService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
+
+        // BNPL
+        services.AddScoped<IBnplService, BnplService>();
 
         return services;
     }

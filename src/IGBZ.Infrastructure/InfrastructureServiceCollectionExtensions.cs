@@ -2,6 +2,7 @@ namespace IGBZ.Infrastructure;
 
 using IGBZ.Application.Abstractions;
 using IGBZ.Application.Auth;
+using IGBZ.Application.BNPL;
 using IGBZ.Application.Discounts;
 using IGBZ.Application.Payments;
 using IGBZ.Application.Tenancy;
@@ -31,8 +32,24 @@ public static class InfrastructureServiceCollectionExtensions
             services.AddScoped<IJwtTokenService, JwtTokenService>();
         }
 
-        // درگاه تست (فاز ۲ — جایگزین با درگاه واقعی در فاز ۶)
-        services.AddScoped<IPaymentGateway, TestPaymentGateway>();
+        // ── درگاه‌های پرداخت ──
+        services.AddScoped<IPaymentGateway, TestPaymentGateway>();      // توسعه/تست
+        services.AddScoped<IPaymentGateway>(sp =>
+            new PayIrGateway(sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient("PayIr")));
+        services.AddScoped<IPaymentGateway>(sp =>
+            new NowPaymentsGateway(sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient("NowPayments")));
+
+        // ── درگاه‌های BNPL ──
+        services.AddScoped<IBnplGateway>(sp =>
+            new DigipayBnplGateway(sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient("Digipay")));
+        services.AddScoped<IBnplGateway>(sp =>
+            new SnapppayBnplGateway(sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient("Snapppay")));
+
+        // HttpClientهای نام‌گذاری‌شده برای درگاه‌ها
+        services.AddHttpClient("PayIr");
+        services.AddHttpClient("NowPayments");
+        services.AddHttpClient("Digipay");
+        services.AddHttpClient("Snapppay");
 
         // Repository های عمومی (باز) + تننت‌محور
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
