@@ -12,6 +12,8 @@
     <PackageReference Include="MongoDB.Driver" Version="$(MongoDbDriverVersion)" />
     <!-- DI Abstraction برای ثبت سرویس‌ها -->
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
+    <!-- IConfiguration برای خواندن رازهای تنظیمات -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.0" />
     <!-- JWT (صدور/اعتبارسنجی توکن) -->
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.2.1" />
   </ItemGroup>

@@ -6,6 +6,7 @@ using IGBZ.Application.Auth;
 using IGBZ.Application.BNPL;
 using IGBZ.Application.Catalog;
 using IGBZ.Application.Discounts;
+using IGBZ.Application.Lms;
 using IGBZ.Application.Logistics;
 using IGBZ.Application.Marketplace;
 using IGBZ.Application.Orders;
@@ -64,6 +65,9 @@ public static class ApplicationServiceCollectionExtensions
         // استودیوی AI محتوا
         services.AddScoped<IAiStudioService, AiStudioService>();
         services.AddScoped<IBackgroundMusicCatalogService, BackgroundMusicCatalogService>();
+
+        // LMS (امنیت ویدیو در لایهٔ زیرساخت ثبت می‌شود)
+        services.AddScoped<ICourseService, CourseService>();
 
         return services;
     }

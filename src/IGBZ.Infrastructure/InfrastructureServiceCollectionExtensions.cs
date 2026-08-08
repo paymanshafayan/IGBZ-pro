@@ -4,10 +4,12 @@ using IGBZ.Application.Abstractions;
 using IGBZ.Application.Auth;
 using IGBZ.Application.BNPL;
 using IGBZ.Application.Discounts;
+using IGBZ.Application.Lms;
 using IGBZ.Application.Payments;
 using IGBZ.Application.Tenancy;
 using IGBZ.Infrastructure.Auth;
 using IGBZ.Infrastructure.Gateways;
+using IGBZ.Infrastructure.Lms;
 using IGBZ.Infrastructure.Mongo;
 using IGBZ.Infrastructure.Repositories;
 using Microsoft.Extensions.DependencyInjection;
@@ -61,6 +63,16 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddHttpClient("AiVideoStudio");
         services.AddHttpClient("AiTtsProvider");
         services.AddHttpClient("TranslationProvider");
+
+        // امنیت ویدیوی LMS — راز HMAC از تنظیمات/راز محیطی (هرگز Hardcode)
+        services.AddScoped<ILmsVideoSecurityService>(sp =>
+        {
+            var config = sp.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
+            var secret = config["Lms:VodHmacSigningSecret"];
+            if (string.IsNullOrWhiteSpace(secret))
+                throw new InvalidOperationException("کلید Lms:VodHmacSigningSecret در تنظیمات یافت نشد.");
+            return new LmsVideoSecurityService(secret);
+        });
 
         // Repository های عمومی (باز) + تننت‌محور
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
