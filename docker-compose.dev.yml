@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# محیط توسعهٔ محلی IGBZ (سند معماری بخش ۳)
+# MongoDB به‌صورت Replica Set از روز اول (الزامی برای Transactions/رزرو اتمیک)
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: igbz-mongo
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # یک‌بار اجرا کنید تا Replica Set مقداردهی شود:
+  #   docker compose -f docker-compose.dev.yml up -d
+  #   docker compose -f docker-compose.dev.yml exec mongo mongosh --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]})"
+  mongo-init:
+    image: mongo:7.0
+    container_name: igbz-mongo-init
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: >
+      mongosh --host mongo --eval
+      "try { rs.status() } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}) }"
+
+  redis:
+    image: redis:7-alpine
+    container_name: igbz-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: igbz-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672" # AMQP
+      - "15672:15672" # مدیریت
+    environment:
+      RABBITMQ_DEFAULT_USER: igbz
+      RABBITMQ_DEFAULT_PASS: igbz-dev
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+volumes:
+  mongo-data:
+  redis-data:
+  rabbitmq-data:

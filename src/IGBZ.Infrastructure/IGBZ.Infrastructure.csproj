@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>IGBZ.Infrastructure</RootNamespace>
+    <AssemblyName>IGBZ.Infrastructure</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\IGBZ.Domain\IGBZ.Domain.csproj" />
+    <ProjectReference Include="..\IGBZ.Application\IGBZ.Application.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- MongoDB — سند معماری بخش ۳ -->
+    <PackageReference Include="MongoDB.Driver" Version="$(MongoDbDriverVersion)" />
+    <!-- DI Abstraction برای ثبت سرویس‌ها -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
+  </ItemGroup>
+</Project>

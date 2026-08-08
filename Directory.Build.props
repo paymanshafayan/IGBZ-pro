@@ -1,0 +1,23 @@
+<Project>
+  <!--
+    تنظیمات مشترک همهٔ پروژه‌های IGBZ — نسخه‌ها و قواعد مشترک در یک‌جا.
+    سند مرجع: docs/ARCHITECTURE.md
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- نسخهٔ مشترک پکیج‌ها -->
+    <MongoDbDriverVersion>2.30.0</MongoDbDriverVersion>
+    <XunitVersion>2.9.2</XunitVersion>
+    <XunitRunnerVersion>2.8.2</XunitRunnerVersion>
+    <MicrosoftTestSdkVersion>17.11.1</MicrosoftTestSdkVersion>
+  </PropertyGroup>
+</Project>

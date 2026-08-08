@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>IGBZ.Application</RootNamespace>
+    <AssemblyName>IGBZ.Application</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\IGBZ.Domain\IGBZ.Domain.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- DI Abstraction برای ثبت سرویس‌ها -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
+  </ItemGroup>
+</Project>

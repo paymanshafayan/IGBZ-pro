@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- لایهٔ دامنه — بدون وابستگی به هیچ پکیج خارجی (خالص) -->
+    <RootNamespace>IGBZ.Domain</RootNamespace>
+    <AssemblyName>IGBZ.Domain</AssemblyName>
+  </PropertyGroup>
+</Project>
