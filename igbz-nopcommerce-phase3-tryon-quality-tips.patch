@@ -1,0 +1,106 @@
+From 7b931bb9afdab1e25676a95703039c8c9f8bd1db Mon Sep 17 00:00:00 2001
+From: arena-ai-coding-agent <arena-ai-coding-agent@users.noreply.github.com>
+Date: Sat, 8 Aug 2026 08:28:14 +0000
+Subject: [PATCH] =?UTF-8?q?docs:=20=D8=A7=D9=81=D8=B2=D9=88=D8=AF=D9=86=20?=
+ =?UTF-8?q?=D9=86=DA=A9=D8=A7=D8=AA=20=DA=A9=DB=8C=D9=81=DB=8C=D8=AA=20?=
+ =?UTF-8?q?=D8=B9=DA=A9=D8=B3=20=D8=AF=D8=B1=20=D9=BE=D8=B1=D9=88=20=D9=84?=
+ =?UTF-8?q?=D8=A8=D8=A7=D8=B3=20(=D9=81=D8=A7=D8=B2=203)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+نکات مهم برای گرفتن بهترین کیفیت در محل‌های لازم اضافه شد:
+- کنترلر (سند XML متد + DTO) — برای نمایش به کاربر در اپ/فرانت
+- سرویس (سند کلاس + قرارداد Endpoint محلی) — برای توسعه‌دهنده/Wrapper
+- چک‌لیست «فروشگاه‌ت رو بترکون» (آیتم پرو لباس)
+
+سه نکته: ۱) پس‌زمینهٔ عکس کاربر ساده/تک‌رنگ ۲) ژست صاف با دست‌های کمی باز
+۳) عکس لباس واضح، بدون خطای دید و ترجیحاً Flat-lay
+---
+ .../Public/VirtualTryOnController.cs            | 17 +++++++++++++++--
+ .../Services/LaunchChecklistService.cs          |  2 +-
+ .../Services/VirtualTryOnService.cs             | 11 +++++++++++
+ 3 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/VirtualTryOnController.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/VirtualTryOnController.cs
+index d7778f7..6bc0b10 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/VirtualTryOnController.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/VirtualTryOnController.cs
+@@ -42,6 +42,13 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Controllers.Public
+         /// <summary>
+         /// اجرای پرو لباس: عکس مشتری + عکس لباس → تصویر پوشیده‌شده.
+         /// آدرس‌های تصویر باید قبلاً در یک فضای ذخیره‌سازی عمومی (مثل Picture ناپ‌کامرس یا CDN) باشند.
++        ///
++        /// ⚠️ نکات مهم برای گرفتن بهترین کیفیت (برای نمایش به کاربر در اپ/فرانت):
++        /// ۱) پس‌زمینهٔ عکس کاربر: هرچه ساده‌تر و تک‌رنگ‌تر باشد، لبه‌های لباس دقیق‌تر پردازش می‌شوند.
++        /// ۲) ژست کاربر: فرد نباید دست‌هایش را جلوی بدنش گره زده باشد؛ بهترین حالت، ایستادن صاف با
++        ///    دست‌های کمی باز است.
++        /// ۳) کیفیت عکس لباس: عکس لباس باید کاملاً واضح، بدون خطای دید و ترجیحاً به‌صورت تخت
++        ///    (Flat-lay) گرفته شده باشد.
+         /// </summary>
+         [HttpPost("try-on")]
+         public async Task<IActionResult> TryOn([FromBody] VirtualTryOnRequestDto dto)
+@@ -105,10 +112,16 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Controllers.Public
+ 
+     public class VirtualTryOnRequestDto
+     {
+-        /// <summary>URL عکس تمام‌قد مشتری.</summary>
++        /// <summary>
++        /// URL عکس تمام‌قد مشتری.
++        /// ⚠️ برای بهترین کیفیت: پس‌زمینهٔ ساده/تکرنگ + ایستادن صاف با دست‌های کمی باز (نه گره‌خورده جلوی بدن).
++        /// </summary>
+         public string PersonImageUrl { get; set; }
+ 
+-        /// <summary>URL عکس محصول (لباس).</summary>
++        /// <summary>
++        /// URL عکس محصول (لباس).
++        /// ⚠️ برای بهترین کیفیت: عکس کاملاً واضح، بدون خطای دید و ترجیحاً تخت (Flat-lay).
++        /// </summary>
+         public string GarmentImageUrl { get; set; }
+ 
+         /// <summary>توضیح لباس (اختیاری — برای بهبود کیفیت مدل).</summary>
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+index 221d117..6b16eff 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+@@ -133,7 +133,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             new()
+             {
+                 ItemKey = "virtual_tryon", Title = "پرو لباس با هوش مصنوعی",
+-                Description = "فعال‌سازی پرو مجازی لباس توسط مشتری (آپلود عکس خودش + انتخاب لباس) با مدل IDM-VTON — محلی/ابری.",
++                Description = "فعال‌سازی پرو مجازی لباس توسط مشتری (آپلود عکس خودش + انتخاب لباس) با مدل IDM-VTON — محلی/ابری. ⚠️ برای بهترین کیفیت: عکس کاربر با پس‌زمینهٔ ساده/تک‌رنگ و ایستادن صاف با دست‌های کمی باز؛ عکس لباس واضح و ترجیحاً تخت (Flat-lay).",
+                 GuideUrl = "https://github.com/yisol/IDM-VTON", IconEmoji = "👗", IsAutoDetected = true,
+                 AutoStatusLabel = "سرویس پرو لباس متصل است."
+             },
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/VirtualTryOnService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/VirtualTryOnService.cs
+index ffb0299..fba7307 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/VirtualTryOnService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/VirtualTryOnService.cs
+@@ -19,6 +19,13 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+     /// ۲) **حالت ابری (فال‌بک):** اگر محلی در دسترس نبود یا پاسخ نداد، به Replicate
+     ///    (مدل yisol/idm-vton) با توکن ابری (ApiKey) سقوط می‌کند.
+     /// ورودی: عکس مشتری + عکس لباس (URL) — خروجی: تصویر مشتری با لباس پوشیده‌شده.
++    ///
++    /// ⚠️ نکات مهم برای گرفتن بهترین کیفیت (باید برای کاربر در اپ/فرانت نمایش داده شود):
++    /// ۱) پس‌زمینهٔ عکس کاربر: هرچه ساده‌تر و تک‌رنگ‌تر باشد، لبه‌های لباس دقیق‌تر پردازش می‌شوند.
++    /// ۲) ژست کاربر: فرد نباید دست‌هایش را جلوی بدنش گره زده باشد؛ بهترین حالت، ایستادن صاف با
++    ///    دست‌های کمی باز است.
++    /// ۳) کیفیت عکس لباس: عکس لباس باید کاملاً واضح، بدون خطای دید و ترجیحاً به‌صورت تخت
++    ///    (Flat-lay) گرفته شده باشد.
+     /// </summary>
+     public interface IVirtualTryOnService
+     {
+@@ -110,6 +117,10 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+         /// فراخوانی Endpoint محلی IDM-VTON (Wrapper سبک HTTP روی مدل):
+         /// POST {endpoint} ← { person_image_url, garment_image_url, garment_description, category }
+         /// پاسخ: { success: true, result_url: "..." } یا { success: false, message: "..." }
++        ///
++        /// ⚠️ برای بهترین کیفیت، عکس‌های ورودی باید طبق نکات زیر باشند:
++        /// ۱) عکس کاربر: پس‌زمینهٔ ساده/تک‌رنگ + ایستادن صاف با دست‌های کمی باز (نه گره‌خورده جلوی بدن).
++        /// ۲) عکس لباس: کاملاً واضح، بدون خطای دید و ترجیحاً تخت (Flat-lay).
+         /// </summary>
+         private async Task<VirtualTryOnResult> TryLocalAsync(
+             string endpoint,
+-- 
+2.39.5
+
