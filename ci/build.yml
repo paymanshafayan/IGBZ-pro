@@ -1,3 +1,11 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CI کامل IGBZ — Build + Test همهٔ اجزا
+# ─────────────────────────────────────────────────────────────────────────────
+# توجه: برای فعال‌شدن، این فایل را در ریپو با نام:
+#   .github/workflows/build.yml
+# بسازید (چون اپ گیت‌هابِ این نشست دسترسی Workflows ندارد).
+# محتوای همین فایل (ci/build.yml) را کپی کنید.
+# ─────────────────────────────────────────────────────────────────────────────
 name: build-and-test
 
 on:
@@ -6,7 +14,8 @@ on:
   pull_request:
 
 jobs:
-  build:
+  # ── ۱) بک‌اند دات‌نت (هستهٔ پروژه) ──
+  dotnet:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,5 +38,68 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: dotnet-test-results
           path: tests/**/TestResults/*.trx
+
+  # ── ۲) Storefront (Next.js) ──
+  storefront:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/storefront
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: npm install
+
+      - name: TypeScript Check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+  # ── ۳) اپ ادمین (Flutter) ──
+  flutter-admin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/admin_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Pub Get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+  # ── ۴) اپ مشتری (Flutter) ──
+  flutter-customer:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/customer_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Pub Get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
