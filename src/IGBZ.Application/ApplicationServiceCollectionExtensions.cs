@@ -1,5 +1,6 @@
 namespace IGBZ.Application;
 
+using IGBZ.Application.Accounting;
 using IGBZ.Application.Admin;
 using IGBZ.Application.AiStudio;
 using IGBZ.Application.Auth;
@@ -29,7 +30,9 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IPricingCalculator, ShippingCalculator>();
         services.AddScoped<IPricingPipeline, PricingPipeline>();
 
-        // تخفیف
+        // تخفیف (سطح ۲ کوپن + سطح ۳ قواعد)
+        services.AddScoped<IDiscountRule, IGBZ.Domain.Discounts.PercentageAboveThresholdRule>(sp =>
+            new IGBZ.Domain.Discounts.PercentageAboveThresholdRule(thresholdToman: 1_000_000, percent: 5, priority: 10, combinable: true));
         services.AddScoped<IDiscountEngine, DiscountEngine>();
 
         // کیف‌پول
@@ -68,6 +71,9 @@ public static class ApplicationServiceCollectionExtensions
 
         // LMS (امنیت ویدیو در لایهٔ زیرساخت ثبت می‌شود)
         services.AddScoped<ICourseService, CourseService>();
+
+        // حسابداری (فاکتور رسمی + مؤدیان)
+        services.AddScoped<IAccountingService, AccountingService>();
 
         return services;
     }

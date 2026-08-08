@@ -1,12 +1,14 @@
 namespace IGBZ.Infrastructure;
 
 using IGBZ.Application.Abstractions;
+using IGBZ.Application.Accounting;
 using IGBZ.Application.Auth;
 using IGBZ.Application.BNPL;
 using IGBZ.Application.Discounts;
 using IGBZ.Application.Lms;
 using IGBZ.Application.Payments;
 using IGBZ.Application.Tenancy;
+using IGBZ.Infrastructure.Accounting;
 using IGBZ.Infrastructure.Auth;
 using IGBZ.Infrastructure.Gateways;
 using IGBZ.Infrastructure.Lms;
@@ -73,6 +75,11 @@ public static class InfrastructureServiceCollectionExtensions
                 throw new InvalidOperationException("کلید Lms:VodHmacSigningSecret در تنظیمات یافت نشد.");
             return new LmsVideoSecurityService(secret);
         });
+
+        // سامانهٔ مؤدیان مالیاتی
+        services.AddScoped<ITaxProvider>(sp =>
+            new ModianTaxProvider(sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient("ModianTax")));
+        services.AddHttpClient("ModianTax");
 
         // Repository های عمومی (باز) + تننت‌محور
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));

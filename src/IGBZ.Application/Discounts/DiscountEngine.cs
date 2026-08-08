@@ -10,10 +10,69 @@ using IGBZ.Domain.Discounts;
 public class DiscountEngine : IDiscountEngine
 {
     private readonly IDiscountLookup _lookup;
+    private readonly IReadOnlyList<IDiscountRule> _rules;
 
-    public DiscountEngine(IDiscountLookup lookup)
+    public DiscountEngine(IDiscountLookup lookup, IEnumerable<IDiscountRule>? rules = null)
     {
         _lookup = lookup;
+        _rules = (rules ?? Enumerable.Empty<IDiscountRule>())
+            .OrderBy(r => r.Priority)
+            .ToList();
+    }
+
+    /// <summary>
+    /// اعمال قواعد سطح ۳: بر اساس priority اجرا می‌شوند؛ قاعده‌های غیرقابل‌ترکیب،
+    /// قواعد بعدی را متوقف می‌کنند. جمع تخفیف‌ها هرگز از مبلغ سبد بیشتر نمی‌شود.
+    /// </summary>
+    public async Task<DiscountApplicationResult> ApplyRulesAsync(
+        Money orderSubtotalToman, string customerId, CancellationToken cancellationToken = default)
+    {
+        if (_rules.Count == 0)
+            return new DiscountApplicationResult();
+
+        var context = new DiscountRuleContext
+        {
+            OrderSubtotalToman = orderSubtotalToman.Toman,
+            CustomerId = customerId
+        };
+
+        var totalDiscount = 0m;
+        var appliedKeys = new List<string>();
+        var errors = new List<string>();
+        var combinableChain = true;
+
+        foreach (var rule in _rules)
+        {
+            // قاعدهٔ غیرقابل‌ترکیب → بعد از اولین اعمال، بقیه متوقف می‌شوند
+            if (!combinableChain && !rule.Combinable)
+                continue;
+
+            var result = rule.Apply(context);
+            if (result.IsApplied)
+            {
+                totalDiscount += result.DiscountToman;
+                appliedKeys.Add(result.AppliedRuleKey ?? rule.RuleKey);
+
+                if (!rule.Combinable)
+                    combinableChain = false;
+            }
+            else if (result.ErrorMessage != null)
+            {
+                errors.Add($"{rule.RuleKey}: {result.ErrorMessage}");
+            }
+        }
+
+        totalDiscount = Math.Min(totalDiscount, orderSubtotalToman.Toman);
+
+        if (totalDiscount <= 0)
+            return new DiscountApplicationResult { Errors = errors.Count > 0 ? errors : new[] { "هیچ قاعده‌ای اعمال نشد." } };
+
+        return new DiscountApplicationResult
+        {
+            IsApplied = true,
+            DiscountAmount = new Money(totalDiscount),
+            AppliedCode = string.Join("+", appliedKeys)
+        };
     }
 
     public async Task<DiscountApplicationResult> ApplyCouponAsync(
