@@ -1,0 +1,509 @@
+From fcf107b6a509bf7e9e366a91c7688a2718ff2e1b Mon Sep 17 00:00:00 2001
+From: arena-ai-coding-agent <arena-ai-coding-agent@users.noreply.github.com>
+Date: Sat, 8 Aug 2026 08:24:36 +0000
+Subject: [PATCH] =?UTF-8?q?feat:=20=D9=81=D8=A7=D8=B2=203=20=E2=80=94=20?=
+ =?UTF-8?q?=D9=BE=D8=B1=D9=88=20=D9=84=D8=A8=D8=A7=D8=B3=20AI=20=D8=A8?=
+ =?UTF-8?q?=D8=A7=20IDM-VTON=20(=D9=87=DB=8C=D8=A8=D8=B1=DB=8C=D8=AF=20?=
+ =?UTF-8?q?=D9=85=D8=AD=D9=84=DB=8C/=D8=A7=D8=A8=D8=B1=DB=8C)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- سرویس VirtualTryOnService با مدل متن‌باز IDM-VTON:
+  * حالت محلی (لوکال): فراخوانی Endpoint محلی GPU (EndpointOverrideUrl) با قرارداد
+    {person_image_url, garment_image_url, garment_description, category}
+  * حالت ابری (فال‌بک): Replicate (yisol/idm-vton) با توکن ابری — ساخت Prediction + Polling
+  * انتخاب خودکار: محلی اول، در صورت شکست → ابری
+- کنترلر عمومی api/virtual-tryon/try-on برای مشتری (عکس خودش + عکس لباس → تصویر پوشیده‌شده):
+  * کسر هزینه از کیف‌پول مشتری (۲۰هزار تومان) با الگوی AI Studio + بازگشت خودکار در صورت شکست
+  * نیاز به پلن فعال فروشگاه
+- ProviderKey جدید «virtual-tryon» در پنل اتصالات (راهنما: github.com/yisol/IDM-VTON)
+- چک‌لیست: آیتم «پرو لباس» خودکار شد (وضعیت از Credential تشخیص داده می‌شود)
+---
+ .../Public/VirtualTryOnController.cs          | 120 ++++++++
+ .../MultiTenantStoresPlugin.cs                |   4 +
+ .../Services/LaunchChecklistService.cs        |   7 +-
+ .../TenantIntegrationCredentialService.cs     |   5 +
+ .../Services/VirtualTryOnService.cs           | 280 ++++++++++++++++++
+ 5 files changed, 413 insertions(+), 3 deletions(-)
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/VirtualTryOnController.cs
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/VirtualTryOnService.cs
+
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/VirtualTryOnController.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/VirtualTryOnController.cs
+new file mode 100644
+index 0000000..d7778f7
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Public/VirtualTryOnController.cs
+@@ -0,0 +1,120 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Controllers.Public
++{
++    using System;
++    using System.Threading.Tasks;
++    using Microsoft.AspNetCore.Mvc;
++    using Nop.Core;
++    using Nop.Plugin.Misc.MultiTenantStores.Domain;
++    using Nop.Plugin.Misc.MultiTenantStores.Services;
++
++    /// <summary>
++    /// «امکان پرو لباس توسط مشتری با هوش مصنوعی» (نیازمندی #۷) — مشتری عکس خودش و عکس محصول
++    /// (لباس) را می‌فرستد و تصویرِ پوشیده‌شده با مدل IDM-VTON (محلی/ابری هیبریدی) دریافت می‌کند.
++    /// هزینه از کیف‌پول واحد مشتری کسر می‌شود (الگوی مشترک AI Studio) و در صورت شکست، بازگردانده می‌شود.
++    /// </summary>
++    [ApiController]
++    [Route("api/virtual-tryon")]
++    public class VirtualTryOnController : ControllerBase
++    {
++        // هزینهٔ هر درخواست به تومان — در نسخهٔ کامل باید قابل‌ویرایش هر تننت باشد
++        private const decimal TryOnTomanCost = 20000m;
++
++        private readonly IWorkContext _workContext;
++        private readonly IStoreContext _storeContext;
++        private readonly IWalletService _walletService;
++        private readonly IVirtualTryOnService _tryOnService;
++        private readonly ITenantPlanService _tenantPlanService;
++
++        public VirtualTryOnController(
++            IWorkContext workContext,
++            IStoreContext storeContext,
++            IWalletService walletService,
++            IVirtualTryOnService tryOnService,
++            ITenantPlanService tenantPlanService)
++        {
++            _workContext = workContext;
++            _storeContext = storeContext;
++            _walletService = walletService;
++            _tryOnService = tryOnService;
++            _tenantPlanService = tenantPlanService;
++        }
++
++        /// <summary>
++        /// اجرای پرو لباس: عکس مشتری + عکس لباس → تصویر پوشیده‌شده.
++        /// آدرس‌های تصویر باید قبلاً در یک فضای ذخیره‌سازی عمومی (مثل Picture ناپ‌کامرس یا CDN) باشند.
++        /// </summary>
++        [HttpPost("try-on")]
++        public async Task<IActionResult> TryOn([FromBody] VirtualTryOnRequestDto dto)
++        {
++            var customer = await _workContext.GetCurrentCustomerAsync();
++            if (customer == null || customer.Id <= 0)
++                return Unauthorized(new { success = false, message = "برای استفاده از پرو لباس، ابتدا وارد شوید." });
++
++            var store = await _storeContext.GetCurrentStoreAsync();
++
++            // فروشگاه باید پلن فعال داشته باشد (هر پلن پولی/آزمایشی)
++            var activePlan = await _tenantPlanService.GetActivePlanForStoreAsync(store.Id);
++            if (activePlan == null)
++                return StatusCode(402, new { success = false, message = "فروشگاه پلن فعال ندارد. ابتدا اشتراک را فعال کنید." });
++
++            if (dto == null || string.IsNullOrWhiteSpace(dto.PersonImageUrl) || string.IsNullOrWhiteSpace(dto.GarmentImageUrl))
++                return BadRequest(new { success = false, message = "عکس مشتری و عکس لباس الزامی است." });
++
++            var referenceCode = $"tryon-{Guid.NewGuid():N}";
++
++            // کسر هزینه از کیف‌پول مشتری (Idempotent با ReferenceCode یکتا)
++            var (debited, balanceAfterDebit, debitError) = await _walletService.TryDebitAsync(
++                customer.Id, store.Id, TryOnTomanCost, WalletTransactionReason.AiFeatureUsageDebit, referenceCode);
++
++            if (!debited)
++                return StatusCode(402, new
++                {
++                    success = false,
++                    message = debitError,
++                    requiredToman = TryOnTomanCost,
++                    currentBalanceToman = balanceAfterDebit
++                });
++
++            var result = await _tryOnService.TryOnAsync(
++                store.Id,
++                dto.PersonImageUrl,
++                dto.GarmentImageUrl,
++                dto.GarmentDescription,
++                dto.Category ?? "upper_body");
++
++            if (!result.IsSuccess)
++            {
++                // بازگشت خودکار هزینه در صورت شکست سرویس
++                await _walletService.CreditAsync(
++                    customer.Id, store.Id, TryOnTomanCost,
++                    WalletTransactionReason.AiFeatureUsageRefund, $"{referenceCode}-refund");
++
++                return BadRequest(new { success = false, message = result.Message });
++            }
++
++            return Ok(new
++            {
++                success = true,
++                resultImageUrl = result.ResultImageUrl,
++                provider = result.Provider,
++                tomanCharged = TryOnTomanCost,
++                newBalanceToman = await _walletService.GetBalanceAsync(customer.Id, store.Id)
++            });
++        }
++    }
++
++    public class VirtualTryOnRequestDto
++    {
++        /// <summary>URL عکس تمام‌قد مشتری.</summary>
++        public string PersonImageUrl { get; set; }
++
++        /// <summary>URL عکس محصول (لباس).</summary>
++        public string GarmentImageUrl { get; set; }
++
++        /// <summary>توضیح لباس (اختیاری — برای بهبود کیفیت مدل).</summary>
++        public string GarmentDescription { get; set; }
++
++        /// <summary>دستهٔ لباس: upper_body / lower_body / dresses (پیش‌فرض upper_body).</summary>
++        public string Category { get; set; }
++    }
++}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs
+index 9427361..f49748f 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs
+@@ -122,6 +122,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores
+             services.AddScoped<ITenantPlanService, TenantPlanService>();
+             services.AddScoped<ITenantIntegrationCredentialService, TenantIntegrationCredentialService>();
+             services.AddScoped<ILaunchChecklistService, LaunchChecklistService>();
++            services.AddScoped<IVirtualTryOnService, VirtualTryOnService>();
+             services.AddScoped<IAffiliateMarketingService, AffiliateMarketingService>();
+             services.AddScoped<ICourseService, CourseService>();
+             services.AddScoped<IWalletService, WalletService>();
+@@ -208,6 +209,9 @@ namespace Nop.Plugin.Misc.MultiTenantStores
+             // HttpClientهای نام‌گذاری‌شدهٔ مورد استفاده در ParbadPaymentService/CryptoAndTranslationService/
+             // MarketplaceOmnichannelService/LogisticsAndShippingService/SeoAndAdNetworksFeedService
+             services.AddHttpClient("ParbadGateway");
++            // پرو لباس IDM-VTON: Endpoint محلی + Replicate ابری (فال‌بک)
++            services.AddHttpClient("VirtualTryOn");
++            services.AddHttpClient("ReplicateApi");
+             services.AddHttpClient("NowPayments");
+             services.AddHttpClient("TranslationProvider");
+             services.AddHttpClient("DigikalaOpenApi");
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+index 591f379..221d117 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+@@ -133,9 +133,9 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             new()
+             {
+                 ItemKey = "virtual_tryon", Title = "پرو لباس با هوش مصنوعی",
+-                Description = "فعال‌سازی پرو مجازی لباس توسط مشتری (آپلود عکس خودش + انتخاب لباس) برای کاهش مرجوعی و افزایش فروش.",
+-                GuideUrl = "https://hooshran.com", IconEmoji = "👗", IsAutoDetected = false,
+-                AutoStatusLabel = null
++                Description = "فعال‌سازی پرو مجازی لباس توسط مشتری (آپلود عکس خودش + انتخاب لباس) با مدل IDM-VTON — محلی/ابری.",
++                GuideUrl = "https://github.com/yisol/IDM-VTON", IconEmoji = "👗", IsAutoDetected = true,
++                AutoStatusLabel = "سرویس پرو لباس متصل است."
+             },
+             new()
+             {
+@@ -190,6 +190,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+                         "kavenegar" => activeProviderKeys.Contains("kavenegar"),
+                         "digipay" => activeProviderKeys.Contains("digipay") || activeProviderKeys.Contains("parbad.digipay"),
+                         "snapppay" => activeProviderKeys.Contains("snapppay"),
++                        "virtual_tryon" => activeProviderKeys.Contains("virtual-tryon"),
+                         _ => false
+                     };
+ 
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantIntegrationCredentialService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantIntegrationCredentialService.cs
+index 18f2edd..7841e3e 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantIntegrationCredentialService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantIntegrationCredentialService.cs
+@@ -74,6 +74,11 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             ["kavenegar"] = new() { DisplayName = "کاوه‌نگار (پیامک/OTP)", GuideUrl = "https://kavenegar.com/rest.html" },
+             ["triboon"] = new() { DisplayName = "تریبون (رپورتاژ)", GuideUrl = "https://triboon.co/" },
+             ["instagram.graph"] = new() { DisplayName = "Instagram Graph API (توکن دسترسی صفحه/کسب‌وکار)", GuideUrl = "https://developers.facebook.com/docs/instagram-api/" },
++            ["virtual-tryon"] = new()
++            {
++                DisplayName = "پرو لباس هوش مصنوعی (IDM-VTON — محلی/ابری)",
++                GuideUrl = "https://github.com/yisol/IDM-VTON"
++            },
+             ["instagram.oauth"] = new() { DisplayName = "ورود مشتریان با اینستاگرام (Business Login App ID/Secret)", GuideUrl = "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login" }
+         };
+ 
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/VirtualTryOnService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/VirtualTryOnService.cs
+new file mode 100644
+index 0000000..ffb0299
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/VirtualTryOnService.cs
+@@ -0,0 +1,280 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Services
++{
++    using System;
++    using System.Linq;
++    using System.Net.Http;
++    using System.Net.Http.Json;
++    using System.Text.Json;
++    using System.Text.Json.Serialization;
++    using System.Threading;
++    using System.Threading.Tasks;
++    using Nop.Plugin.Misc.MultiTenantStores.Domain;
++
++    /// <summary>
++    /// پرو لباس هوش مصنوعی با مدل متن‌باز **IDM-VTON** (https://github.com/yisol/IDM-VTON) با
++    /// روش هیبریدی:
++    /// ۱) **حالت محلی (لوکال):** پلتفرم IDM-VTON را روی سرور GPU خودش (یا از طریق یک Wrapper
++    ///    سبک HTTP) اجرا می‌کند و Endpoint آن در <see cref="TenantIntegrationCredential.EndpointOverrideUrl"/>
++    ///    ثبت می‌شود — هزینهٔ پردازش ریالی/رایگان (فقط هزینهٔ زیرساخت).
++    /// ۲) **حالت ابری (فال‌بک):** اگر محلی در دسترس نبود یا پاسخ نداد، به Replicate
++    ///    (مدل yisol/idm-vton) با توکن ابری (ApiKey) سقوط می‌کند.
++    /// ورودی: عکس مشتری + عکس لباس (URL) — خروجی: تصویر مشتری با لباس پوشیده‌شده.
++    /// </summary>
++    public interface IVirtualTryOnService
++    {
++        Task<VirtualTryOnResult> TryOnAsync(
++            int storeId,
++            string personImageUrl,
++            string garmentImageUrl,
++            string garmentDescription = null,
++            string category = "upper_body");
++    }
++
++    public class VirtualTryOnResult
++    {
++        public bool IsSuccess { get; set; }
++        public string ResultImageUrl { get; set; }
++
++        /// <summary>"local" یا "cloud-replicate" — برای نمایش/گزارش.</summary>
++        public string Provider { get; set; }
++        public string Message { get; set; }
++    }
++
++    public class VirtualTryOnService : IVirtualTryOnService
++    {
++        private const string ProviderKey = "virtual-tryon";
++
++        // Replicate (ابر) — مدل متن‌باز IDM-VTON
++        private const string ReplicateCreateUrl = "https://api.replicate.com/v1/predictions";
++        private const string ReplicateModel = "yisol/idm-vton";
++
++        private readonly IHttpClientFactory _httpClientFactory;
++        private readonly ITenantIntegrationCredentialService _credentialService;
++
++        public VirtualTryOnService(
++            IHttpClientFactory httpClientFactory,
++            ITenantIntegrationCredentialService credentialService)
++        {
++            _httpClientFactory = httpClientFactory;
++            _credentialService = credentialService;
++        }
++
++        public async Task<VirtualTryOnResult> TryOnAsync(
++            int storeId,
++            string personImageUrl,
++            string garmentImageUrl,
++            string garmentDescription = null,
++            string category = "upper_body")
++        {
++            if (string.IsNullOrWhiteSpace(personImageUrl) || string.IsNullOrWhiteSpace(garmentImageUrl))
++                return new VirtualTryOnResult { IsSuccess = false, Message = "عکس مشتری و عکس لباس الزامی است." };
++
++            var credential = (await _credentialService.GetByStoreIdAsync(storeId))
++                .FirstOrDefault(c => c.ProviderKey == ProviderKey && c.IsActive);
++
++            if (credential == null)
++                return new VirtualTryOnResult { IsSuccess = false, Message = "سرویس پرو لباس برای این فروشگاه فعال نشده است." };
++
++            var localEndpoint = credential.EndpointOverrideUrl;
++            var cloudToken = _credentialService.DecryptForActualUse(credential.ApiKey);
++            var localSecret = _credentialService.DecryptForActualUse(credential.ApiSecret);
++
++            // ۱) حالت محلی (لوکال) — اگر Endpoint محلی تنظیم شده باشد
++            if (!string.IsNullOrWhiteSpace(localEndpoint))
++            {
++                var localResult = await TryLocalAsync(localEndpoint, localSecret, personImageUrl, garmentImageUrl, garmentDescription, category);
++                if (localResult.IsSuccess)
++                    return localResult;
++
++                // در صورت شکست محلی، به ابری سقوط می‌کنیم (اگر توکن ابری موجود باشد)
++            }
++
++            // ۲) حالت ابری (فال‌بک)
++            if (!string.IsNullOrWhiteSpace(cloudToken))
++            {
++                var cloudResult = await TryCloudReplicateAsync(cloudToken, personImageUrl, garmentImageUrl, garmentDescription, category);
++                if (cloudResult.IsSuccess)
++                    return cloudResult;
++            }
++
++            return new VirtualTryOnResult
++            {
++                IsSuccess = false,
++                Message = "پرو لباس در دسترس نیست (هر دو حالت محلی و ابری ناموفق بودند). لطفاً بعداً دوباره تلاش کنید."
++            };
++        }
++
++        // ────────────────────────── حالت محلی (لوکال) ──────────────────────────
++
++        /// <summary>
++        /// فراخوانی Endpoint محلی IDM-VTON (Wrapper سبک HTTP روی مدل):
++        /// POST {endpoint} ← { person_image_url, garment_image_url, garment_description, category }
++        /// پاسخ: { success: true, result_url: "..." } یا { success: false, message: "..." }
++        /// </summary>
++        private async Task<VirtualTryOnResult> TryLocalAsync(
++            string endpoint,
++            string localSecret,
++            string personImageUrl,
++            string garmentImageUrl,
++            string garmentDescription,
++            string category)
++        {
++            try
++            {
++                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
++                var client = _httpClientFactory.CreateClient("VirtualTryOn");
++
++                // اگر توکن محلی (ApiSecret) تنظیم شده بود، به‌عنوان Authorization ارسال می‌شود
++                if (!string.IsNullOrWhiteSpace(localSecret))
++                {
++                    client.DefaultRequestHeaders.Remove("Authorization");
++                    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {localSecret}");
++                }
++
++                var response = await client.PostAsJsonAsync(endpoint, new
++                {
++                    person_image_url = personImageUrl,
++                    garment_image_url = garmentImageUrl,
++                    garment_description = garmentDescription,
++                    category
++                }, cts.Token);
++
++                if (!response.IsSuccessStatusCode)
++                    return new VirtualTryOnResult { IsSuccess = false, Message = $"سرور محلی پرو لباس خطا داد (کد {(int)response.StatusCode})." };
++
++                var payload = await response.Content.ReadFromJsonAsync<LocalTryOnResponse>(cts.Token);
++                if (payload != null && payload.Success && !string.IsNullOrWhiteSpace(payload.ResultUrl))
++                {
++                    return new VirtualTryOnResult
++                    {
++                        IsSuccess = true,
++                        ResultImageUrl = payload.ResultUrl,
++                        Provider = "local",
++                        Message = "پرو لباس با موفقیت روی سرور محلی انجام شد."
++                    };
++                }
++
++                return new VirtualTryOnResult { IsSuccess = false, Message = payload?.Message ?? "پاسخ نامعتبر از سرور محلی پرو لباس." };
++            }
++            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
++            {
++                return new VirtualTryOnResult { IsSuccess = false, Message = $"سرور محلی پرو لباس در دسترس نیست: {ex.Message}" };
++            }
++        }
++
++        // ────────────────────────── حالت ابری (Replicate) ──────────────────────────
++
++        /// <summary>
++        /// فراخوانی مدل yisol/idm-vton روی Replicate (دو مرحله: ساخت Prediction + Polling نتیجه).
++        /// </summary>
++        private async Task<VirtualTryOnResult> TryCloudReplicateAsync(
++            string cloudToken,
++            string personImageUrl,
++            string garmentImageUrl,
++            string garmentDescription,
++            string category)
++        {
++            try
++            {
++                var client = _httpClientFactory.CreateClient("ReplicateApi");
++                client.DefaultRequestHeaders.Remove("Authorization");
++                client.DefaultRequestHeaders.Add("Authorization", $"Bearer {cloudToken}");
++
++                var createResponse = await client.PostAsJsonAsync(ReplicateCreateUrl, new
++                {
++                    model = ReplicateModel,
++                    input = new
++                    {
++                        human_img = personImageUrl,
++                        garm_img = garmentImageUrl,
++                        garment_des = garmentDescription ?? "photo",
++                        category
++                    }
++                });
++
++                if (!createResponse.IsSuccessStatusCode)
++                    return new VirtualTryOnResult { IsSuccess = false, Message = $"Replicate درخواست را رد کرد (کد {(int)createResponse.StatusCode})." };
++
++                var created = await createResponse.Content.ReadFromJsonAsync<ReplicatePrediction>();
++                if (created?.Id == null)
++                    return new VirtualTryOnResult { IsSuccess = false, Message = "پاسخ نامعتبر از Replicate." };
++
++                // Polling نتیجه (حداکثر ~۲ دقیقه)
++                for (var i = 0; i < 40; i++)
++                {
++                    await Task.Delay(3000);
++
++                    var pollResponse = await client.GetAsync($"{ReplicateCreateUrl}/{created.Id}");
++                    if (!pollResponse.IsSuccessStatusCode)
++                        continue;
++
++                    var prediction = await pollResponse.Content.ReadFromJsonAsync<ReplicatePrediction>();
++                    if (prediction?.Status == "succeeded")
++                    {
++                        var outputUrl = ExtractOutputUrl(prediction.Output);
++                        if (!string.IsNullOrWhiteSpace(outputUrl))
++                        {
++                            return new VirtualTryOnResult
++                            {
++                                IsSuccess = true,
++                                ResultImageUrl = outputUrl,
++                                Provider = "cloud-replicate",
++                                Message = "پرو لباس با موفقیت روی Replicate انجام شد."
++                            };
++                        }
++
++                        return new VirtualTryOnResult { IsSuccess = false, Message = "Replicate نتیجه‌ای بدون URL برگرداند." };
++                    }
++
++                    if (prediction?.Status is "failed" or "canceled")
++                        return new VirtualTryOnResult { IsSuccess = false, Message = "پردازش ابری ناموفق بود." };
++                }
++
++                return new VirtualTryOnResult { IsSuccess = false, Message = "زمان‌بندی پردازش ابری به پایان رسید." };
++            }
++            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
++            {
++                return new VirtualTryOnResult { IsSuccess = false, Message = $"سرویس ابری پرو لباس در دسترس نیست: {ex.Message}" };
++            }
++        }
++
++        private static string ExtractOutputUrl(JsonElement output)
++        {
++            if (output.ValueKind == JsonValueKind.String)
++                return output.GetString();
++
++            if (output.ValueKind == JsonValueKind.Array && output.GetArrayLength() > 0)
++            {
++                var first = output[0];
++                if (first.ValueKind == JsonValueKind.String)
++                    return first.GetString();
++                if (first.ValueKind == JsonValueKind.Object &&
++                    first.TryGetProperty("url", out var urlEl) && urlEl.ValueKind == JsonValueKind.String)
++                    return urlEl.GetString();
++            }
++
++            if (output.ValueKind == JsonValueKind.Object &&
++                output.TryGetProperty("url", out var objUrl) && objUrl.ValueKind == JsonValueKind.String)
++                return objUrl.GetString();
++
++            return null;
++        }
++    }
++
++    /// <summary>پاسخ Endpoint محلی IDM-VTON.</summary>
++    internal class LocalTryOnResponse
++    {
++        [JsonPropertyName("success")] public bool Success { get; set; }
++        [JsonPropertyName("result_url")] public string ResultUrl { get; set; }
++        [JsonPropertyName("message")] public string Message { get; set; }
++    }
++
++    /// <summary>پاسخ Replicate (Prediction).</summary>
++    internal class ReplicatePrediction
++    {
++        [JsonPropertyName("id")] public string Id { get; set; }
++        [JsonPropertyName("status")] public string Status { get; set; }
++        [JsonPropertyName("output")] public JsonElement Output { get; set; }
++        [JsonPropertyName("error")] public object Error { get; set; }
++    }
++}
+-- 
+2.39.5
+
