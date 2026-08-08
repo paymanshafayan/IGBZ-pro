@@ -1,0 +1,158 @@
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+@@ -37,6 +37,15 @@
+         /// <summary>توضیح وضعیت خودکار (مثلاً «اتصال فعال است» / «هنوز وصل نشده»).</summary>
+         public string AutoStatusLabel { get; set; }
+ 
++        /// <summary>
++        /// مسیر داخلی پنل ادمین که ادمین فروشگاه باید برای تنظیم این مورد به آنجا برود
++        /// (مثلاً بخش API Key/اتصالات). اگر null باشد، دکمهٔ «تنظیم در پنل» نمایش داده نمی‌شود.
++        /// </summary>
++        public string AdminActionUrl { get; set; }
++
++        /// <summary>متن دکمهٔ داخلی (پیش‌فرض: «تنظیم در پنل»).</summary>
++        public string AdminActionLabel { get; set; }
++
+         public LaunchChecklistStatus Status { get; set; }
+     }
+ 
+@@ -44,13 +53,16 @@
+     {
+         private readonly IRepository<LaunchChecklistItemState> _stateRepository;
+         private readonly ITenantIntegrationCredentialService _credentialService;
++        private readonly IRepository<Domain.BnplCredential> _bnplCredentialRepository;
+ 
+         public LaunchChecklistService(
+             IRepository<LaunchChecklistItemState> stateRepository,
+-            ITenantIntegrationCredentialService credentialService)
++            ITenantIntegrationCredentialService credentialService,
++            IRepository<Domain.BnplCredential> bnplCredentialRepository)
+         {
+             _stateRepository = stateRepository;
+             _credentialService = credentialService;
++            _bnplCredentialRepository = bnplCredentialRepository;
+         }
+ 
+         /// <summary>تعریف استاتیک آیتم‌ها — عنوان، توضیح، راهنما و نوع تشخیص.</summary>
+@@ -59,9 +71,11 @@
+             new()
+             {
+                 ItemKey = "payir", Title = "درگاه پرداخت pay.ir",
+-                Description = "فعال‌سازی درگاه پرداخت ریالی برای دریافت وجه از مشتریان (الزامی برای فروش).",
++                Description = "فعال‌سازی درگاه پرداخت ریالی برای دریافت وجه از مشتریان (الزامی برای فروش). کلید API را از «بخش اتصالات (API Key)» در پنل مدیریت تنظیم کنید.",
+                 GuideUrl = "https://pay.ir/", IconEmoji = "💳", IsAutoDetected = true,
+-                AutoStatusLabel = "درگاه pay.ir متصل است."
++                AutoStatusLabel = "درگاه pay.ir متصل است.",
++                AdminActionUrl = "/Admin/IntegrationCredentials/Index",
++                AdminActionLabel = "تنظیم کلید در اتصالات"
+             },
+             new()
+             {
+@@ -108,37 +122,47 @@
+             new()
+             {
+                 ItemKey = "instagram", Title = "اتصال دستیار اینستاگرام",
+-                Description = "وصل‌کردن توکن Instagram Graph API (پنل اتصالات) تا انتشار خودکار پست، پاسخ کامنت و دایرکت فعال شود.",
++                Description = "وصل‌کردن توکن Instagram Graph API تا انتشار خودکار پست، پاسخ کامنت و دایرکت فعال شود. توکن را از «بخش اتصالات (API Key)» در پنل مدیریت تنظیم کنید.",
+                 GuideUrl = "https://developers.facebook.com/docs/instagram-api/", IconEmoji = "📸", IsAutoDetected = true,
+-                AutoStatusLabel = "دستیار اینستاگرام متصل است."
++                AutoStatusLabel = "دستیار اینستاگرام متصل است.",
++                AdminActionUrl = "/Admin/IntegrationCredentials/Index",
++                AdminActionLabel = "تنظیم کلید در اتصالات"
+             },
+             new()
+             {
+                 ItemKey = "kavenegar", Title = "فعال‌سازی پیامک (کاوه‌نگار)",
+-                Description = "ثبت کلید API کاوه‌نگار برای ورود با کد یک‌بارمصرف و یادآوری سبد رهاشده.",
++                Description = "ثبت کلید API کاوه‌نگار برای ورود با کد یک‌بارمصرف و یادآوری سبد رهاشده. کلید را از «بخش اتصالات (API Key)» در پنل مدیریت تنظیم کنید.",
+                 GuideUrl = "https://kavenegar.com/rest.html", IconEmoji = "✉️", IsAutoDetected = true,
+-                AutoStatusLabel = "سرویس پیامک فعال است."
++                AutoStatusLabel = "سرویس پیامک فعال است.",
++                AdminActionUrl = "/Admin/IntegrationCredentials/Index",
++                AdminActionLabel = "تنظیم کلید در اتصالات"
+             },
+             new()
+             {
+                 ItemKey = "digipay", Title = "فعال‌سازی دیجی‌پی (خرید اعتباری/اقساطی)",
+-                Description = "اتصال دیجی‌پی BNPL تا مشتریان بتوانند «الان بخرند، بعداً پرداخت کنند» — افزایش چشمگیر فروش.",
++                Description = "اتصال دیجی‌پی BNPL تا مشتریان بتوانند «الان بخرند، بعداً پرداخت کنند» — افزایش چشمگیر فروش. اعتبارنامه را از «پنل پرداخت اعتباری (BNPL)» در پنل مدیریت تنظیم کنید.",
+                 GuideUrl = "https://www.mydigipay.com/bpg/", IconEmoji = "💎", IsAutoDetected = true,
+-                AutoStatusLabel = "دیجی‌پی متصل است."
++                AutoStatusLabel = "دیجی‌پی متصل است.",
++                AdminActionUrl = "/Admin/BnplAdmin/Index",
++                AdminActionLabel = "تنظیم در پنل BNPL"
+             },
+             new()
+             {
+                 ItemKey = "snapppay", Title = "فعال‌سازی اسنپ‌پی (خرید اقساطی)",
+-                Description = "اتصال اسنپ‌پی BNPL برای پرداخت اقساطی مشتریان.",
++                Description = "اتصال اسنپ‌پی BNPL برای پرداخت اقساطی مشتریان. اعتبارنامه را از «پنل پرداخت اعتباری (BNPL)» در پنل مدیریت تنظیم کنید.",
+                 GuideUrl = "https://snapppay.ir/merchant-api-guide", IconEmoji = "🛵", IsAutoDetected = true,
+-                AutoStatusLabel = "اسنپ‌پی متصل است."
++                AutoStatusLabel = "اسنپ‌پی متصل است.",
++                AdminActionUrl = "/Admin/BnplAdmin/Index",
++                AdminActionLabel = "تنظیم در پنل BNPL"
+             },
+             new()
+             {
+                 ItemKey = "virtual_tryon", Title = "پرو لباس با هوش مصنوعی",
+-                Description = "فعال‌سازی پرو مجازی لباس توسط مشتری (آپلود عکس خودش + انتخاب لباس) با مدل IDM-VTON — محلی/ابری. ⚠️ برای بهترین کیفیت: عکس کاربر با پس‌زمینهٔ ساده/تک‌رنگ و ایستادن صاف با دست‌های کمی باز؛ عکس لباس واضح و ترجیحاً تخت (Flat-lay).",
++                Description = "فعال‌سازی پرو مجازی لباس توسط مشتری (آپلود عکس خودش + انتخاب لباس) با مدل IDM-VTON — محلی/ابری. کلید/Endpoint را از «بخش اتصالات (API Key)» در پنل مدیریت تنظیم کنید. ⚠️ برای بهترین کیفیت: عکس کاربر با پس‌زمینهٔ ساده/تک‌رنگ و ایستادن صاف با دست‌های کمی باز؛ عکس لباس واضح و ترجیحاً تخت (Flat-lay).",
+                 GuideUrl = "https://github.com/yisol/IDM-VTON", IconEmoji = "👗", IsAutoDetected = true,
+-                AutoStatusLabel = "سرویس پرو لباس متصل است."
++                AutoStatusLabel = "سرویس پرو لباس متصل است.",
++                AdminActionUrl = "/Admin/IntegrationCredentials/Index",
++                AdminActionLabel = "تنظیم کلید در اتصالات"
+             },
+             new()
+             {
+@@ -203,6 +227,12 @@
+                 credentials.Where(c => c.IsActive).Select(c => c.ProviderKey),
+                 StringComparer.OrdinalIgnoreCase);
+ 
++            // برای BNPL، وضعیت از جدول BnplCredential خوانده می‌شود
++            var bnplCredentials = await _bnplCredentialRepository.GetAllAsync(q => q.Where(c => c.StoreId == storeId && c.IsActive));
++            var activeBnplKeys = new HashSet<string>(
++                bnplCredentials.Select(c => c.ProviderKey),
++                StringComparer.OrdinalIgnoreCase);
++
+             var result = new List<LaunchChecklistItemDto>();
+             foreach (var item in staticItems)
+             {
+@@ -216,6 +246,8 @@
+                     GuideSteps = item.GuideSteps,
+                     IsAutoDetected = item.IsAutoDetected,
+                     AutoStatusLabel = item.AutoStatusLabel,
++                    AdminActionUrl = item.AdminActionUrl,
++                    AdminActionLabel = item.AdminActionLabel,
+                     Status = LaunchChecklistStatus.Pending
+                 };
+ 
+@@ -227,8 +259,8 @@
+                         "payir" => activeProviderKeys.Contains("parbad.payir") || activeProviderKeys.Contains("payir"),
+                         "instagram" => activeProviderKeys.Contains("instagram.graph"),
+                         "kavenegar" => activeProviderKeys.Contains("kavenegar"),
+-                        "digipay" => activeProviderKeys.Contains("digipay") || activeProviderKeys.Contains("parbad.digipay"),
+-                        "snapppay" => activeProviderKeys.Contains("snapppay"),
++                        "digipay" => activeProviderKeys.Contains("digipay") || activeProviderKeys.Contains("parbad.digipay") || activeBnplKeys.Contains("digipay"),
++                        "snapppay" => activeProviderKeys.Contains("snapppay") || activeBnplKeys.Contains("snapppay"),
+                         "virtual_tryon" => activeProviderKeys.Contains("virtual-tryon"),
+                         _ => false
+                     };
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml
+@@ -76,6 +76,14 @@
+                     else
+                     {
+                         <span class="badge badge-warning">در انتظار اتصال</span>
++
++                        @* ادمین فروشگاه باید خودش در پنل مدیریت (بخش API Key/اتصالات یا پنل BNPL) تنظیم کند *@
++                        if (!string.IsNullOrWhiteSpace(item.AdminActionUrl))
++                        {
++                            <a href="@Url.Content(item.AdminActionUrl)" class="btn btn-sm btn-primary mt-1 d-block" style="max-width:200px;">
++                                ⚙️ @(item.AdminActionLabel ?? "تنظیم در پنل")
++                            </a>
++                        }
+                     }
+ 
+                     @if (!string.IsNullOrWhiteSpace(item.GuideUrl))
