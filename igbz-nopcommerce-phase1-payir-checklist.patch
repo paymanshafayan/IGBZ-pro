@@ -1,0 +1,980 @@
+From a57a1a3cd4ec003ac3e7e0679be5b3ac356f3d37 Mon Sep 17 00:00:00 2001
+From: arena-ai-coding-agent <arena-ai-coding-agent@users.noreply.github.com>
+Date: Sat, 8 Aug 2026 08:05:46 +0000
+Subject: [PATCH] =?UTF-8?q?feat:=20=D9=81=D8=A7=D8=B2=201=20=E2=80=94=20?=
+ =?UTF-8?q?=D8=AF=D8=B1=DA=AF=D8=A7=D9=87=20pay.ir=20=D9=88=D8=A7=D9=82?=
+ =?UTF-8?q?=D8=B9=DB=8C=20+=20=DA=86=DA=A9=E2=80=8C=D9=84=DB=8C=D8=B3?=
+ =?UTF-8?q?=D8=AA=20=C2=AB=D9=81=D8=B1=D9=88=D8=B4=DA=AF=D8=A7=D9=87?=
+ =?UTF-8?q?=E2=80=8C=D8=AA=20=D8=B1=D9=88=20=D8=A8=D8=AA=D8=B1=DA=A9=D9=88?=
+ =?UTF-8?q?=D9=86=C2=BB?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+pay.ir (با مستندات رسمی docs.pay.ir/gateway، نه افزونه):
+- RequestPayIrAsync: POST pay.ir/pg/send با {api, amount(ریال), redirect, factorNumber, description}
+  و هدایت به pay.ir/pg/{token}؛ توکن به‌عنوان TrackingNumber در ledger ثبت می‌شود.
+- VerifyPayIrAsync: POST pay.ir/pg/verify با {api, token} + مقایسهٔ دقیق مبلغ + دفترکل ضد-Replay.
+- انتخاب خودکار مسیر بر اساس gatewayName=payir؛ Parbad چندبانکه حفظ می‌شود.
+- ProviderKey جدید «parbad.payir» در پنل IntegrationCredentials با راهنمای رسمی.
+
+چک‌لیست «فروشگاه‌ت رو بترکون» (داشبورد ادمین):
+- ویجت IWidgetPlugin در زون admin_content_before که فقط روی داشبورد ادمین رندر می‌شود.
+- ۱۴ آیتم راه‌اندازی/رشد فروشگاه (pay.ir، سرچ کنسول، ایندکس، بیزینس، بینگ، ترب، ایمالز،
+  اینستاگرام، کاوه‌نگار، دیجی‌پی، اسنپ‌پی، پرو لباس، اینفلوئنسر، ManyChat).
+- آیتم‌های خودکار (وضعیت از Credential واقعی تشخیص داده می‌شود) + آیتم‌های دستی با دکمه‌های
+  «انجام دادم/بعداً» و لینک راهنما.
+- جدول LaunchChecklistItemState + Unique Index (StoreId, ItemKey).
+---
+ .../LaunchChecklistViewComponent.cs           |  61 ++++
+ .../Admin/LaunchChecklistController.cs        |  92 +++++++
+ .../Data/EntityBuilders.cs                    |  14 +
+ .../Data/SchemaMigration.cs                   |  14 +
+ .../Domain/LaunchChecklistItemState.cs        |  32 +++
+ .../MultiTenantStoresPlugin.cs                |  21 +-
+ .../Nop.Plugin.Misc.MultiTenantStores.csproj  |   4 +
+ .../Services/LaunchChecklistService.cs        | 260 ++++++++++++++++++
+ .../Services/ParbadPaymentService.cs          | 208 ++++++++++++++
+ .../TenantIntegrationCredentialService.cs     |   1 +
+ .../Components/LaunchChecklist/Default.cshtml |  75 +++++
+ 11 files changed, 781 insertions(+), 1 deletion(-)
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Components/LaunchChecklistViewComponent.cs
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Admin/LaunchChecklistController.cs
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/LaunchChecklistItemState.cs
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+ create mode 100644 Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml
+
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Components/LaunchChecklistViewComponent.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Components/LaunchChecklistViewComponent.cs
+new file mode 100644
+index 0000000..38de4d5
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Components/LaunchChecklistViewComponent.cs
+@@ -0,0 +1,61 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Components
++{
++    using System.Linq;
++    using System.Threading.Tasks;
++    using Microsoft.AspNetCore.Mvc;
++    using Microsoft.AspNetCore.Mvc.ViewComponents;
++    using Nop.Core;
++    using Nop.Web.Framework.Components;
++    using Nop.Plugin.Misc.MultiTenantStores.Services;
++
++    /// <summary>
++    /// ویجت «فروشگاه‌ت رو بترکون» — چک‌لیست راه‌اندازی/رشد فروشگاه که فقط در صفحهٔ نخست
++    /// (داشبورد) پنل ادمین نمایش داده می‌شود. از زون <c>admin_content_before</c> تزریق می‌شود.
++    /// </summary>
++    public class LaunchChecklistViewComponent : NopViewComponent
++    {
++        private readonly ILaunchChecklistService _checklistService;
++        private readonly IStoreContext _storeContext;
++
++        public LaunchChecklistViewComponent(
++            ILaunchChecklistService checklistService,
++            IStoreContext storeContext)
++        {
++            _checklistService = checklistService;
++            _storeContext = storeContext;
++        }
++
++        public async Task<IViewComponentResult> InvokeAsync(string widgetZone, object additionalData)
++        {
++            // فقط روی داشبورد ادمین (Home/Index در Area=Admin) نمایش داده شود، نه همهٔ صفحات ادمین
++            var routeValues = ViewComponentContext.HttpContext.Request.RouteValues;
++            var isAdminDashboard =
++                string.Equals(routeValues["area"]?.ToString(), "Admin", System.StringComparison.OrdinalIgnoreCase)
++                && string.Equals(routeValues["controller"]?.ToString(), "Home", System.StringComparison.OrdinalIgnoreCase)
++                && string.Equals(routeValues["action"]?.ToString(), "Index", System.StringComparison.OrdinalIgnoreCase);
++
++            if (!isAdminDashboard)
++                return Content(string.Empty);
++
++            var store = await _storeContext.GetCurrentStoreAsync();
++            var items = await _checklistService.GetChecklistAsync(store.Id);
++            var pendingCount = items.Count(i => i.Status == Domain.LaunchChecklistStatus.Pending);
++
++            var model = new LaunchChecklistModel
++            {
++                StoreId = store.Id,
++                PendingCount = pendingCount,
++                Items = items
++            };
++
++            return View("~/Plugins/Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml", model);
++        }
++    }
++
++    public class LaunchChecklistModel
++    {
++        public int StoreId { get; set; }
++        public int PendingCount { get; set; }
++        public System.Collections.Generic.IList<LaunchChecklistItemDto> Items { get; set; }
++    }
++}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Admin/LaunchChecklistController.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Admin/LaunchChecklistController.cs
+new file mode 100644
+index 0000000..4deae84
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Controllers/Admin/LaunchChecklistController.cs
+@@ -0,0 +1,92 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Controllers.Admin
++{
++    using System.Linq;
++    using System.Threading.Tasks;
++    using Microsoft.AspNetCore.Mvc;
++    using Nop.Web.Framework;
++    using Nop.Web.Framework.Controllers;
++    using Nop.Web.Framework.Mvc.Filters;
++    using Nop.Services.Security;
++    using Nop.Plugin.Misc.MultiTenantStores.Infrastructure.Filters;
++    using Nop.Plugin.Misc.MultiTenantStores.Services;
++
++    /// <summary>
++    /// اکشن‌های مدیریت چک‌لیست «فروشگاه‌ت رو بترکون» — دکمه‌های «انجام دادم / بعداً» در ویجت
++    /// داشبورد ادمین. وضعیت هر آیتم به‌ازای همان فروشگاه (تننت) ذخیره می‌شود.
++    /// </summary>
++    [Area(AreaNames.ADMIN)]
++    [AuthorizeAdmin]
++    [AutoValidateAntiforgeryToken]
++    [ServiceFilter(typeof(TenantAdminScopeFilter))]
++    public class LaunchChecklistController : BasePluginController
++    {
++        private readonly ILaunchChecklistService _checklistService;
++        private readonly Nop.Core.IStoreContext _storeContext;
++        private readonly IPermissionService _permissionService;
++
++        public LaunchChecklistController(
++            ILaunchChecklistService checklistService,
++            Nop.Core.IStoreContext storeContext,
++            IPermissionService permissionService)
++        {
++            _checklistService = checklistService;
++            _storeContext = storeContext;
++            _permissionService = permissionService;
++        }
++
++        /// <summary>دریافت JSON وضعیت چک‌لیست (برای ویجت داشبورد).</summary>
++        [HttpGet]
++        public async Task<IActionResult> GetItems()
++        {
++            if (!await _permissionService.AuthorizeAsync(StandardPermission.Configuration.MANAGE_PLUGINS))
++                return Json(new { success = false, message = "دسترسی رد شد." });
++
++            var store = await _storeContext.GetCurrentStoreAsync();
++            var items = await _checklistService.GetChecklistAsync(store.Id);
++
++            return Json(items.Select(i => new
++            {
++                i.ItemKey,
++                i.Title,
++                i.Description,
++                i.GuideUrl,
++                i.IconEmoji,
++                i.IsAutoDetected,
++                i.AutoStatusLabel,
++                status = i.Status.ToString()
++            }));
++        }
++
++        /// <summary>علامت‌گذاری «انجام دادم» برای یک آیتم دستی.</summary>
++        [HttpPost]
++        public async Task<IActionResult> MarkDone(string itemKey)
++        {
++            if (!await _permissionService.AuthorizeAsync(StandardPermission.Configuration.MANAGE_PLUGINS))
++                return Json(new { success = false, message = "دسترسی رد شد." });
++
++            if (string.IsNullOrWhiteSpace(itemKey))
++                return Json(new { success = false, message = "شناسهٔ آیتم نامعتبر است." });
++
++            var store = await _storeContext.GetCurrentStoreAsync();
++            await _checklistService.MarkDoneAsync(store.Id, itemKey.Trim());
++
++            return RedirectToAction("Index", "Home", new { area = AreaNames.ADMIN });
++        }
++
++        /// <summary>علامت‌گذاری «بعداً» (فعلاً از اولویت اصلی خارج می‌شود).</summary>
++        [HttpPost]
++        public async Task<IActionResult> MarkLater(string itemKey)
++        {
++            if (!await _permissionService.AuthorizeAsync(StandardPermission.Configuration.MANAGE_PLUGINS))
++                return Json(new { success = false, message = "دسترسی رد شد." });
++
++            if (string.IsNullOrWhiteSpace(itemKey))
++                return Json(new { success = false, message = "شناسهٔ آیتم نامعتبر است." });
++
++            var store = await _storeContext.GetCurrentStoreAsync();
++            await _checklistService.MarkSnoozedAsync(store.Id, itemKey.Trim());
++
++            return RedirectToAction("Index", "Home", new { area = AreaNames.ADMIN });
++        }
++    }
++}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs
+index e775e9a..8ea0715 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/EntityBuilders.cs
+@@ -273,4 +273,18 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Data
+                 .WithColumn(nameof(PhoneOtpCode.Used)).AsBoolean().NotNullable();
+         }
+     }
++
++    /// <summary>وضعیت هر آیتم از چک‌لیست «فروشگاه‌ت رو بترکون» به‌ازای هر فروشگاه.</summary>
++    public class LaunchChecklistItemStateBuilder : NopEntityBuilder<LaunchChecklistItemState>
++    {
++        public override void MapEntity(CreateTableExpressionBuilder table)
++        {
++            table
++                .WithColumn(nameof(LaunchChecklistItemState.StoreId)).AsInt32().NotNullable()
++                .WithColumn(nameof(LaunchChecklistItemState.ItemKey)).AsString(100).NotNullable()
++                .WithColumn(nameof(LaunchChecklistItemState.Status)).AsInt32().NotNullable()
++                .WithColumn(nameof(LaunchChecklistItemState.CompletedOnUtc)).AsDateTime2().Nullable()
++                .WithColumn(nameof(LaunchChecklistItemState.UpdatedOnUtc)).AsDateTime2().NotNullable();
++        }
++    }
+ }
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs
+index b1a878f..b6479c2 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Data/SchemaMigration.cs
+@@ -149,6 +149,20 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Data
+             if (!Schema.Table(nameof(LandingContentBlock)).Exists())
+                 Create.TableFor<LandingContentBlock>();
+ 
++            // جدول وضعیت چک‌لیست «فروشگاه‌ت رو بترکون» (هر آیتم دستی به‌ازای هر فروشگاه)
++            if (!Schema.Table(nameof(LaunchChecklistItemState)).Exists())
++                Create.TableFor<LaunchChecklistItemState>();
++
++            if (Schema.Table(nameof(LaunchChecklistItemState)).Exists()
++                && !Schema.Table(nameof(LaunchChecklistItemState)).Index("IX_LaunchChecklistItemState_Store_Item").Exists())
++            {
++                Create.Index("IX_LaunchChecklistItemState_Store_Item")
++                    .OnTable(nameof(LaunchChecklistItemState))
++                    .OnColumn(nameof(LaunchChecklistItemState.StoreId)).Ascending()
++                    .OnColumn(nameof(LaunchChecklistItemState.ItemKey)).Ascending()
++                    .WithOptions().Unique();
++            }
++
+             // --- دادهٔ اولیهٔ واقعی سایت مادر (نه دادهٔ فرضی؛ محتوای واقعی برای شروع، کاملاً از پنل
+             // مدیریت قابل ویرایش/حذف طبق درخواست کاربر) — فقط یک‌بار در نصب اجرا می‌شود. ---
+             SeedDefaultTenantPlans();
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/LaunchChecklistItemState.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/LaunchChecklistItemState.cs
+new file mode 100644
+index 0000000..19d993f
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Domain/LaunchChecklistItemState.cs
+@@ -0,0 +1,32 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Domain
++{
++    using System;
++    using Nop.Core;
++
++    /// <summary>
++    /// وضعیت هر آیتم از چک‌لیست «فروشگاه‌ت رو بترکون» (راه‌اندازی/رشد فروشگاه) برای یک تننت.
++    /// آیتم‌هایی که وضعیتشان به‌صورت خودکار از دادهٔ واقعی (مثل فعال‌بودن یک Integration Credential)
++    /// قابل تشخیص است، در این جدول ذخیره نمی‌شوند — فقط آیتم‌های دستی که کاربر «انجام دادم/بعداً»
++    /// می‌زند رکورد می‌گیرند.
++    /// </summary>
++    public class LaunchChecklistItemState : BaseEntity
++    {
++        public int StoreId { get; set; }
++        public string ItemKey { get; set; }
++        public LaunchChecklistStatus Status { get; set; }
++        public DateTime? CompletedOnUtc { get; set; }
++        public DateTime UpdatedOnUtc { get; set; }
++    }
++
++    public enum LaunchChecklistStatus
++    {
++        /// <summary>در انتظار — کاربر هنوز اقدامی نکرده.</summary>
++        Pending = 0,
++
++        /// <summary>کاربر «انجام دادم» را زده.</summary>
++        Done = 10,
++
++        /// <summary>کاربر «بعداً» را زده (فعلاً از لیست اصلی پنهان/کم‌اولویت می‌شود).</summary>
++        Snoozed = 20
++    }
++}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs
+index 210ec9d..9427361 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/MultiTenantStoresPlugin.cs
+@@ -11,13 +11,18 @@ namespace Nop.Plugin.Misc.MultiTenantStores
+     using Nop.Core.Domain.ScheduleTasks;
+     using Nop.Services.Plugins;
+     using Nop.Services.Common;
++    using Nop.Services.Cms;
+     using Nop.Services.Localization;
+     using Nop.Services.ScheduleTasks;
+     using Nop.Plugin.Misc.MultiTenantStores.Services;
+     using Nop.Plugin.Misc.MultiTenantStores.Infrastructure;
+     using Nop.Plugin.Misc.MultiTenantStores.Infrastructure.Filters;
+ 
+-    public class MultiTenantStoresPlugin : BasePlugin, IMiscPlugin
++    /// <summary>
++    /// پلاگین پایهٔ چندفروشندگی. علاوه بر IMiscPlugin، ویجت «فروشگاه‌ت رو بترکون» (چک‌لیست
++    /// راه‌اندازی/رشد فروشگاه) را در زون بالای محتوای ادمین تزریق می‌کند.
++    /// </summary>
++    public class MultiTenantStoresPlugin : BasePlugin, IMiscPlugin, IWidgetPlugin
+     {
+         private readonly ILocalizationService _localizationService;
+         private readonly IScheduleTaskService _scheduleTaskService;
+@@ -28,6 +33,19 @@ namespace Nop.Plugin.Misc.MultiTenantStores
+             _scheduleTaskService = scheduleTaskService;
+         }
+ 
++        public bool HideInWidgetList => false;
++
++        /// <summary>ویجت چک‌لیست فقط در زون بالای محتوای پنل ادمین تزریق می‌شود (خودِ کامپوننت تصمیم می‌گیرد فقط روی داشبورد رندر شود).</summary>
++        public Task<IList<string>> GetWidgetZonesAsync()
++        {
++            return Task.FromResult<IList<string>>(new List<string> { "admin_content_before" });
++        }
++
++        public Type GetWidgetViewComponent(string widgetZone)
++        {
++            return typeof(Components.LaunchChecklistViewComponent);
++        }
++
+         public override async Task InstallAsync()
+         {
+             await _localizationService.AddOrUpdateLocaleResourceAsync(new Dictionary<string, string>
+@@ -103,6 +121,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores
+             services.AddScoped<ITenantProvisioningService, TenantProvisioningService>();
+             services.AddScoped<ITenantPlanService, TenantPlanService>();
+             services.AddScoped<ITenantIntegrationCredentialService, TenantIntegrationCredentialService>();
++            services.AddScoped<ILaunchChecklistService, LaunchChecklistService>();
+             services.AddScoped<IAffiliateMarketingService, AffiliateMarketingService>();
+             services.AddScoped<ICourseService, CourseService>();
+             services.AddScoped<IWalletService, WalletService>();
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Nop.Plugin.Misc.MultiTenantStores.csproj b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Nop.Plugin.Misc.MultiTenantStores.csproj
+index e8761e3..18c3f81 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Nop.Plugin.Misc.MultiTenantStores.csproj
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Nop.Plugin.Misc.MultiTenantStores.csproj
+@@ -20,6 +20,7 @@
+     <None Remove="Views\TenantPlans\CreateOrUpdate.cshtml" />
+     <None Remove="Views\LandingContentBlocks\Index.cshtml" />
+     <None Remove="Views\LandingContentBlocks\CreateOrUpdate.cshtml" />
++    <None Remove="Views\Shared\Components\LaunchChecklist\Default.cshtml" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+@@ -56,6 +57,9 @@
+     <Content Include="Views\LandingContentBlocks\CreateOrUpdate.cshtml">
+       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+     </Content>
++    <Content Include="Views\Shared\Components\LaunchChecklist\Default.cshtml">
++      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
++    </Content>
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+new file mode 100644
+index 0000000..591f379
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/LaunchChecklistService.cs
+@@ -0,0 +1,260 @@
++namespace Nop.Plugin.Misc.MultiTenantStores.Services
++{
++    using System;
++    using System.Collections.Generic;
++    using System.Linq;
++    using System.Threading.Tasks;
++    using Nop.Data;
++    using Nop.Plugin.Misc.MultiTenantStores.Domain;
++
++    /// <summary>
++    /// چک‌لیست «فروشگاه‌ت رو بترکون» — راهنمای گام‌به‌گام راه‌اندازی/رشد فروشگاه برای هر تننت.
++    /// برخی آیتم‌ها وضعیت خودکار دارند (از دادهٔ واقعی مثل فعال‌بودن Credential تشخیص داده می‌شوند)
++    /// و برخی دستی‌اند (کاربر با دکمه «انجام دادم/بعداً» آن‌ها را مدیریت می‌کند).
++    /// </summary>
++    public interface ILaunchChecklistService
++    {
++        Task<IList<LaunchChecklistItemDto>> GetChecklistAsync(int storeId);
++        Task<int> GetPendingCountAsync(int storeId);
++        Task MarkDoneAsync(int storeId, string itemKey);
++        Task MarkSnoozedAsync(int storeId, string itemKey);
++    }
++
++    public class LaunchChecklistItemDto
++    {
++        public string ItemKey { get; set; }
++        public string Title { get; set; }
++        public string Description { get; set; }
++        public string GuideUrl { get; set; }
++        public string IconEmoji { get; set; }
++
++        /// <summary>آیا وضعیت این آیتم خودکار تشخیص داده می‌شود یا دستی؟</summary>
++        public bool IsAutoDetected { get; set; }
++
++        /// <summary>توضیح وضعیت خودکار (مثلاً «اتصال فعال است» / «هنوز وصل نشده»).</summary>
++        public string AutoStatusLabel { get; set; }
++
++        public LaunchChecklistStatus Status { get; set; }
++    }
++
++    public class LaunchChecklistService : ILaunchChecklistService
++    {
++        private readonly IRepository<LaunchChecklistItemState> _stateRepository;
++        private readonly ITenantIntegrationCredentialService _credentialService;
++
++        public LaunchChecklistService(
++            IRepository<LaunchChecklistItemState> stateRepository,
++            ITenantIntegrationCredentialService credentialService)
++        {
++            _stateRepository = stateRepository;
++            _credentialService = credentialService;
++        }
++
++        /// <summary>تعریف استاتیک آیتم‌ها — عنوان، توضیح، راهنما و نوع تشخیص.</summary>
++        private static IList<LaunchChecklistItemDto> GetStaticItems() => new List<LaunchChecklistItemDto>
++        {
++            new()
++            {
++                ItemKey = "payir", Title = "درگاه پرداخت pay.ir",
++                Description = "فعال‌سازی درگاه پرداخت ریالی برای دریافت وجه از مشتریان (الزامی برای فروش).",
++                GuideUrl = "https://pay.ir/", IconEmoji = "💳", IsAutoDetected = true,
++                AutoStatusLabel = "درگاه pay.ir متصل است."
++            },
++            new()
++            {
++                ItemKey = "google_search_console", Title = "ثبت در گوگل سرچ کنسول",
++                Description = "ثبت دامنهٔ فروشگاه در سرچ کنسول گوگل، تایید مالکیت و ارسال sitemap.xml تا صفحات سریع‌تر ایندکس شوند.",
++                GuideUrl = "https://search.google.com/search-console", IconEmoji = "🔍", IsAutoDetected = false,
++                AutoStatusLabel = null
++            },
++            new()
++            {
++                ItemKey = "google_indexing", Title = "ایندکس شدن در گوگل",
++                Description = "درخواست ایندکس صفحات مهم (صفحهٔ اصلی، دسته‌ها و محصولات پرفروش) از سرچ کنسول. (نکته: API ایندکس گوگل فقط برای JobPosting/BroadcastEvent است — برای فروشگاه باید از sitemap + درخواست دستی استفاده شود.)",
++                GuideUrl = "https://search.google.com/search-console", IconEmoji = "🚀", IsAutoDetected = false,
++                AutoStatusLabel = null
++            },
++            new()
++            {
++                ItemKey = "google_business", Title = "گوگل بیزینس پروفایل",
++                Description = "ثبت کسب‌وکار در گوگل مپ/بیزینس برای دیده‌شدن در جست‌وجوی محلی. (تایید پروفایل توسط خودِ صاحب‌کسب‌وکار انجام می‌شود.)",
++                GuideUrl = "https://business.google.com", IconEmoji = "📍", IsAutoDetected = false,
++                AutoStatusLabel = null
++            },
++            new()
++            {
++                ItemKey = "bing_webmaster", Title = "بینگ وب‌مستر",
++                Description = "ثبت سایت در بینگ وب‌مستر + فعال‌سازی IndexNow برای ایندکس تقریباً آنی در بینگ/یاندکس.",
++                GuideUrl = "https://www.bing.com/webmasters", IconEmoji = "🌐", IsAutoDetected = false,
++                AutoStatusLabel = null
++            },
++            new()
++            {
++                ItemKey = "torob", Title = "ثبت در ترب (موتور جست‌وجوی قیمت)",
++                Description = "ثبت فروشگاه در پنل فروشندگان ترب و معرفی فید محصولات تا محصولات در جست‌وجوی ترب نمایش داده شوند.",
++                GuideUrl = "https://seller.torob.com", IconEmoji = "🛒", IsAutoDetected = false,
++                AutoStatusLabel = null
++            },
++            new()
++            {
++                ItemKey = "emalls", Title = "ثبت در ایمالز",
++                Description = "ثبت فروشگاه در ایمالز (موتور جست‌وجوی کالا) و اتصال فید محصولات برای افزایش فروش.",
++                GuideUrl = "https://emalls.ir", IconEmoji = "🏷️", IsAutoDetected = false,
++                AutoStatusLabel = null
++            },
++            new()
++            {
++                ItemKey = "instagram", Title = "اتصال دستیار اینستاگرام",
++                Description = "وصل‌کردن توکن Instagram Graph API (پنل اتصالات) تا انتشار خودکار پست، پاسخ کامنت و دایرکت فعال شود.",
++                GuideUrl = "https://developers.facebook.com/docs/instagram-api/", IconEmoji = "📸", IsAutoDetected = true,
++                AutoStatusLabel = "دستیار اینستاگرام متصل است."
++            },
++            new()
++            {
++                ItemKey = "kavenegar", Title = "فعال‌سازی پیامک (کاوه‌نگار)",
++                Description = "ثبت کلید API کاوه‌نگار برای ورود با کد یک‌بارمصرف و یادآوری سبد رهاشده.",
++                GuideUrl = "https://kavenegar.com/rest.html", IconEmoji = "✉️", IsAutoDetected = true,
++                AutoStatusLabel = "سرویس پیامک فعال است."
++            },
++            new()
++            {
++                ItemKey = "digipay", Title = "فعال‌سازی دیجی‌پی (خرید اعتباری/اقساطی)",
++                Description = "اتصال دیجی‌پی BNPL تا مشتریان بتوانند «الان بخرند، بعداً پرداخت کنند» — افزایش چشمگیر فروش.",
++                GuideUrl = "https://www.mydigipay.com/bpg/", IconEmoji = "💎", IsAutoDetected = true,
++                AutoStatusLabel = "دیجی‌پی متصل است."
++            },
++            new()
++            {
++                ItemKey = "snapppay", Title = "فعال‌سازی اسنپ‌پی (خرید اقساطی)",
++                Description = "اتصال اسنپ‌پی BNPL برای پرداخت اقساطی مشتریان.",
++                GuideUrl = "https://snapppay.ir/merchant-api-guide", IconEmoji = "🛵", IsAutoDetected = true,
++                AutoStatusLabel = "اسنپ‌پی متصل است."
++            },
++            new()
++            {
++                ItemKey = "virtual_tryon", Title = "پرو لباس با هوش مصنوعی",
++                Description = "فعال‌سازی پرو مجازی لباس توسط مشتری (آپلود عکس خودش + انتخاب لباس) برای کاهش مرجوعی و افزایش فروش.",
++                GuideUrl = "https://hooshran.com", IconEmoji = "👗", IsAutoDetected = false,
++                AutoStatusLabel = null
++            },
++            new()
++            {
++                ItemKey = "influencer", Title = "ساخت اینفلوئنسر اختصاصی برند",
++                Description = "طراحی چهرهٔ کاراکتر برند + تثبیت چهره و صدا با Google Flow و ساخت ویدیوهای تبلیغاتی اختصاصی.",
++                GuideUrl = "https://flow.google.com", IconEmoji = "🎬", IsAutoDetected = false,
++                AutoStatusLabel = null
++            },
++            new()
++            {
++                ItemKey = "manychat", Title = "قیف کامنت → دایرکت با ManyChat",
++                Description = "ارزش افزودهٔ اختیاری: راه‌اندازی قیف «کامنت کن تا لینک بفرستم» با ManyChat (نیازمند پلن Pro و اتصال به پیج اینستاگرام).",
++                GuideUrl = "https://manychat.com", IconEmoji = "💬", IsAutoDetected = false,
++                AutoStatusLabel = null
++            }
++        };
++
++        public async Task<IList<LaunchChecklistItemDto>> GetChecklistAsync(int storeId)
++        {
++            var staticItems = GetStaticItems();
++            var states = await _stateRepository.GetAllAsync(q => q.Where(s => s.StoreId == storeId));
++            var stateByKey = states.ToDictionary(s => s.ItemKey, s => s, StringComparer.OrdinalIgnoreCase);
++
++            // برای آیتم‌های خودکار، وضعیت از دادهٔ واقعی Credential ها تشخیص داده می‌شود
++            var credentials = await _credentialService.GetByStoreIdAsync(storeId);
++            var activeProviderKeys = new HashSet<string>(
++                credentials.Where(c => c.IsActive).Select(c => c.ProviderKey),
++                StringComparer.OrdinalIgnoreCase);
++
++            var result = new List<LaunchChecklistItemDto>();
++            foreach (var item in staticItems)
++            {
++                var dto = new LaunchChecklistItemDto
++                {
++                    ItemKey = item.ItemKey,
++                    Title = item.Title,
++                    Description = item.Description,
++                    GuideUrl = item.GuideUrl,
++                    IconEmoji = item.IconEmoji,
++                    IsAutoDetected = item.IsAutoDetected,
++                    AutoStatusLabel = item.AutoStatusLabel,
++                    Status = LaunchChecklistStatus.Pending
++                };
++
++                if (item.IsAutoDetected)
++                {
++                    // تشخیص خودکار از روی ProviderKey فعال
++                    var isActive = item.ItemKey switch
++                    {
++                        "payir" => activeProviderKeys.Contains("parbad.payir") || activeProviderKeys.Contains("payir"),
++                        "instagram" => activeProviderKeys.Contains("instagram.graph"),
++                        "kavenegar" => activeProviderKeys.Contains("kavenegar"),
++                        "digipay" => activeProviderKeys.Contains("digipay") || activeProviderKeys.Contains("parbad.digipay"),
++                        "snapppay" => activeProviderKeys.Contains("snapppay"),
++                        _ => false
++                    };
++
++                    dto.Status = isActive ? LaunchChecklistStatus.Done : LaunchChecklistStatus.Pending;
++                    dto.AutoStatusLabel = isActive
++                        ? (item.AutoStatusLabel ?? "انجام شده است.")
++                        : "هنوز وصل نشده است.";
++                }
++                else if (stateByKey.TryGetValue(item.ItemKey, out var state))
++                {
++                    dto.Status = state.Status;
++                }
++
++                result.Add(dto);
++            }
++
++            return result;
++        }
++
++        public async Task<int> GetPendingCountAsync(int storeId)
++        {
++            var items = await GetChecklistAsync(storeId);
++            return items.Count(i => i.Status == LaunchChecklistStatus.Pending);
++        }
++
++        public async Task MarkDoneAsync(int storeId, string itemKey)
++        {
++            if (string.IsNullOrWhiteSpace(itemKey))
++                return;
++
++            var state = await GetOrCreateStateAsync(storeId, itemKey);
++            state.Status = LaunchChecklistStatus.Done;
++            state.CompletedOnUtc = DateTime.UtcNow;
++            state.UpdatedOnUtc = DateTime.UtcNow;
++            await _stateRepository.UpdateAsync(state);
++        }
++
++        public async Task MarkSnoozedAsync(int storeId, string itemKey)
++        {
++            if (string.IsNullOrWhiteSpace(itemKey))
++                return;
++
++            var state = await GetOrCreateStateAsync(storeId, itemKey);
++            state.Status = LaunchChecklistStatus.Snoozed;
++            state.UpdatedOnUtc = DateTime.UtcNow;
++            await _stateRepository.UpdateAsync(state);
++        }
++
++        private async Task<LaunchChecklistItemState> GetOrCreateStateAsync(int storeId, string itemKey)
++        {
++            var existing = (await _stateRepository.GetAllAsync(q =>
++                q.Where(s => s.StoreId == storeId && s.ItemKey == itemKey))).FirstOrDefault();
++
++            if (existing != null)
++                return existing;
++
++            var created = new LaunchChecklistItemState
++            {
++                StoreId = storeId,
++                ItemKey = itemKey,
++                Status = LaunchChecklistStatus.Pending,
++                UpdatedOnUtc = DateTime.UtcNow
++            };
++            await _stateRepository.InsertAsync(created);
++            return created;
++        }
++    }
++}
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/ParbadPaymentService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/ParbadPaymentService.cs
+index b41a734..c1c941a 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/ParbadPaymentService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/ParbadPaymentService.cs
+@@ -25,6 +25,11 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+     {
+         private const string ProviderKeyPrefix = "parbad.";
+ 
++        // ── آدرس‌های واقعی pay.ir (مستندات رسمی: https://docs.pay.ir/gateway) ──
++        private const string PayIrSendEndpoint = "https://pay.ir/pg/send";
++        private const string PayIrVerifyEndpoint = "https://pay.ir/pg/verify";
++        private const string PayIrGatewayPage = "https://pay.ir/pg";
++
+         private readonly IHttpClientFactory _httpClientFactory;
+         private readonly IRepository<TenantIntegrationCredential> _credentialRepository;
+         private readonly IRepository<PaymentTransactionLedger> _ledgerRepository;
+@@ -39,8 +44,15 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             _ledgerRepository = ledgerRepository;
+         }
+ 
++        private static bool IsPayIr(string gatewayName) =>
++            string.Equals(gatewayName, "payir", StringComparison.OrdinalIgnoreCase);
++
+         public async Task<ParbadPaymentRequestResult> RequestPaymentAsync(int storeId, int orderId, decimal amountToman, string gatewayName, string callbackUrl)
+         {
++            // مسیر واقعی pay.ir (مستندات رسمی) — در غیر این صورت الگوی Parbad چندبانکه
++            if (IsPayIr(gatewayName))
++                return await RequestPayIrAsync(storeId, orderId, amountToman, gatewayName, callbackUrl);
++
+             var credential = await GetActiveCredentialAsync(storeId, gatewayName);
+             if (credential == null)
+             {
+@@ -121,6 +133,10 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+                 q.Where(l => l.StoreId == storeId && l.TrackingNumber == trackingNumber)))
+                 .FirstOrDefault();
+ 
++            // مسیر واقعی pay.ir — تایید با token (که در URL بازگشت از درگاه آمده)
++            if (existingLedger != null && IsPayIr(existingLedger.GatewayName))
++                return await VerifyPayIrAsync(storeId, trackingNumber, amountToman, existingLedger);
++
+             // جلوگیری از تایید مضاعف: اگر قبلاً با موفقیت تایید شده، دوباره اعتبار واریز نشود
+             if (existingLedger?.State == PaymentTransactionState.VerifiedSuccess)
+             {
+@@ -207,6 +223,162 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+             };
+         }
+ 
++        // ────────────────────────── pay.ir (رسمی) ──────────────────────────
++
++        /// <summary>
++        /// درخواست پرداخت از pay.ir طبق مستندات رسمی:
++        /// POST https://pay.ir/pg/send ← { api, amount(ریال), redirect, factorNumber, description }
++        /// پاسخ موفق: { status: 1, token } — سپس کاربر به https://pay.ir/pg/{token} هدایت می‌شود.
++        /// توکن در ledger به‌عنوان TrackingNumber ثبت می‌شود چون در URL بازگشت از درگاه می‌آید.
++        /// </summary>
++        private async Task<ParbadPaymentRequestResult> RequestPayIrAsync(int storeId, int orderId, decimal amountToman, string gatewayName, string callbackUrl)
++        {
++            var credential = await GetActiveCredentialAsync(storeId, gatewayName);
++            if (credential == null)
++            {
++                return new ParbadPaymentRequestResult
++                {
++                    IsSuccess = false,
++                    GatewayName = gatewayName,
++                    Message = "کلید API درگاه pay.ir برای این فروشگاه فعال یا تایید نشده است."
++                };
++            }
++
++            var factorNumber = $"INV-{storeId}-{orderId}-{Guid.NewGuid():N}".Substring(0, 32);
++            var httpClient = _httpClientFactory.CreateClient("ParbadGateway");
++
++            string rawBody;
++            PayIrSendResponse payload;
++            try
++            {
++                var response = await httpClient.PostAsJsonAsync(PayIrSendEndpoint, new PayIrSendPayload
++                {
++                    Api = credential.ApiKey,
++                    Amount = (long)(amountToman * 10),
++                    Redirect = callbackUrl,
++                    FactorNumber = factorNumber,
++                    Description = $"سفارش {orderId}"
++                });
++
++                rawBody = await response.Content.ReadAsStringAsync();
++                payload = response.IsSuccessStatusCode
++                    ? await response.Content.ReadFromJsonAsync<PayIrSendResponse>()
++                    : null;
++            }
++            catch (HttpRequestException ex)
++            {
++                rawBody = $"HttpRequestException: {ex.Message}";
++                payload = null;
++            }
++
++            if (payload != null && payload.Status == 1 && !string.IsNullOrWhiteSpace(payload.Token))
++            {
++                // ثبت ledger با TrackingNumber = token (چون callback کاربر token را برمی‌گرداند)
++                await LogLedgerAsync(storeId, orderId, gatewayName, payload.Token, amountToman,
++                    PaymentTransactionState.RedirectedToBank, null, rawBody);
++
++                return new ParbadPaymentRequestResult
++                {
++                    IsSuccess = true,
++                    TrackingNumber = payload.Token,
++                    RedirectUrl = $"{PayIrGatewayPage}/{payload.Token}",
++                    GatewayName = gatewayName,
++                    Message = "درخواست پرداخت با موفقیت ثبت شد و کاربر به درگاه pay.ir منتقل می‌شود."
++                };
++            }
++
++            await LogLedgerAsync(storeId, orderId, gatewayName, factorNumber, amountToman,
++                PaymentTransactionState.Requested, null, rawBody);
++
++            return new ParbadPaymentRequestResult
++            {
++                IsSuccess = false,
++                GatewayName = gatewayName,
++                TrackingNumber = factorNumber,
++                Message = payload?.ErrorMessage ?? payload?.Message ?? "درگاه pay.ir درخواست را رد کرد."
++            };
++        }
++
++        /// <summary>
++        /// تایید تراکنش pay.ir طبق مستندات رسمی:
++        /// POST https://pay.ir/pg/verify ← { api, token } → { status, amount, transId, ... }
++        /// موفقیت فقط وقتی است که status==1 و مبلغ تاییدشده دقیقاً برابر مبلغ سفارش (به ریال) باشد.
++        /// </summary>
++        private async Task<ParbadVerifyResult> VerifyPayIrAsync(int storeId, string trackingNumber, decimal amountToman, PaymentTransactionLedger existingLedger)
++        {
++            // جلوگیری از تایید مضاعف (Replay)
++            if (existingLedger.State == PaymentTransactionState.VerifiedSuccess)
++            {
++                return new ParbadVerifyResult
++                {
++                    IsSuccess = true,
++                    AlreadyVerifiedBefore = true,
++                    RefId = existingLedger.BankRefId,
++                    Message = "این تراکنش پیش‌تر با موفقیت تایید و ثبت شده است (از تایید مضاعف جلوگیری شد)."
++                };
++            }
++
++            var credential = await GetActiveCredentialAsync(storeId, existingLedger.GatewayName);
++            if (credential == null)
++            {
++                return new ParbadVerifyResult { IsSuccess = false, Message = "کلید API درگاه pay.ir یافت نشد." };
++            }
++
++            var httpClient = _httpClientFactory.CreateClient("ParbadGateway");
++
++            PayIrVerifyResponse verifyPayload;
++            string rawBody;
++            try
++            {
++                var response = await httpClient.PostAsJsonAsync(PayIrVerifyEndpoint, new PayIrVerifyPayload
++                {
++                    Api = credential.ApiKey,
++                    Token = trackingNumber
++                });
++
++                rawBody = await response.Content.ReadAsStringAsync();
++                verifyPayload = response.IsSuccessStatusCode
++                    ? await response.Content.ReadFromJsonAsync<PayIrVerifyResponse>()
++                    : null;
++            }
++            catch (HttpRequestException ex)
++            {
++                rawBody = $"HttpRequestException: {ex.Message}";
++                verifyPayload = null;
++            }
++
++            // مقایسهٔ دقیق مبلغ اعلامی pay.ir با مبلغ سفارش (جلوگیری از دستکاری مبلغ)
++            var verified = verifyPayload != null
++                && verifyPayload.Status == 1
++                && verifyPayload.Amount == (long)(amountToman * 10);
++
++            existingLedger.State = verified
++                ? PaymentTransactionState.VerifiedSuccess
++                : PaymentTransactionState.VerifiedFailed;
++            existingLedger.BankRefId = verifyPayload?.TransId;
++            existingLedger.RawGatewayResponse = rawBody;
++            existingLedger.VerifiedOnUtc = DateTime.UtcNow;
++            await _ledgerRepository.UpdateAsync(existingLedger);
++
++            if (!verified)
++            {
++                return new ParbadVerifyResult
++                {
++                    IsSuccess = false,
++                    Message = verifyPayload == null
++                        ? "پاسخ نامعتبر یا ناموفق از درگاه pay.ir دریافت شد."
++                        : "مبلغ تایید شده توسط pay.ir با مبلغ سفارش مطابقت ندارد."
++                };
++            }
++
++            return new ParbadVerifyResult
++            {
++                IsSuccess = true,
++                RefId = verifyPayload.TransId,
++                Message = "پرداخت با موفقیت توسط pay.ir تایید شد."
++            };
++        }
++
+         private async Task<TenantIntegrationCredential> GetActiveCredentialAsync(int storeId, string gatewayName)
+         {
+             var providerKey = $"{ProviderKeyPrefix}{gatewayName}".ToLowerInvariant();
+@@ -278,4 +450,40 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+         [JsonPropertyName("refId")] public string RefId { get; set; }
+         [JsonPropertyName("amountRials")] public decimal AmountRials { get; set; }
+     }
++
++    // ── DTOهای pay.ir (طبق مستندات رسمی docs.pay.ir/gateway) ──
++
++    internal class PayIrSendPayload
++    {
++        [JsonPropertyName("api")] public string Api { get; set; }
++        [JsonPropertyName("amount")] public long Amount { get; set; }
++        [JsonPropertyName("redirect")] public string Redirect { get; set; }
++        [JsonPropertyName("mobile")] public string Mobile { get; set; }
++        [JsonPropertyName("factorNumber")] public string FactorNumber { get; set; }
++        [JsonPropertyName("description")] public string Description { get; set; }
++    }
++
++    internal class PayIrSendResponse
++    {
++        [JsonPropertyName("status")] public int Status { get; set; }
++        [JsonPropertyName("token")] public string Token { get; set; }
++        [JsonPropertyName("errorMessage")] public string ErrorMessage { get; set; }
++        [JsonPropertyName("message")] public string Message { get; set; }
++    }
++
++    internal class PayIrVerifyPayload
++    {
++        [JsonPropertyName("api")] public string Api { get; set; }
++        [JsonPropertyName("token")] public string Token { get; set; }
++    }
++
++    internal class PayIrVerifyResponse
++    {
++        [JsonPropertyName("status")] public int Status { get; set; }
++        [JsonPropertyName("amount")] public long Amount { get; set; }
++        [JsonPropertyName("transId")] public string TransId { get; set; }
++        [JsonPropertyName("factorNumber")] public string FactorNumber { get; set; }
++        [JsonPropertyName("cardNumber")] public string CardNumber { get; set; }
++        [JsonPropertyName("message")] public string Message { get; set; }
++    }
+ }
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantIntegrationCredentialService.cs b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantIntegrationCredentialService.cs
+index 840e5cb..18f2edd 100644
+--- a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantIntegrationCredentialService.cs
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Services/TenantIntegrationCredentialService.cs
+@@ -47,6 +47,7 @@ namespace Nop.Plugin.Misc.MultiTenantStores.Services
+         private static readonly System.Collections.Generic.Dictionary<string, ProviderMetadata> Providers = new()
+         {
+             ["parbad.zarinpal"] = new() { DisplayName = "زرین‌پال (Parbad)", GuideUrl = "https://help.zarinpal.com/" },
++            ["parbad.payir"] = new() { DisplayName = "پی‌آی‌آر (pay.ir)", GuideUrl = "https://docs.pay.ir/gateway/" },
+             ["parbad.mellat"] = new() { DisplayName = "به‌پرداخت ملت (Parbad)", GuideUrl = "https://behpardakht.com/" },
+             ["parbad.saman"] = new() { DisplayName = "سامان (سپ) (Parbad)", GuideUrl = "https://sep.shaparak.ir/" },
+             ["parbad.parsian"] = new() { DisplayName = "پارسیان (Parbad)", GuideUrl = "https://pec.shaparak.ir/" },
+diff --git a/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml
+new file mode 100644
+index 0000000..ce81af9
+--- /dev/null
++++ b/Plugins/Nop.Plugin.Misc.MultiTenantStores/Views/Shared/Components/LaunchChecklist/Default.cshtml
+@@ -0,0 +1,75 @@
++@model Nop.Plugin.Misc.MultiTenantStores.Components.LaunchChecklistModel
++
++@{
++    var markDoneUrl = Url.Action("MarkDone", "LaunchChecklist", new { area = "Admin" });
++    var markLaterUrl = Url.Action("MarkLater", "LaunchChecklist", new { area = "Admin" });
++}
++
++<div class="card card-default mb-4" dir="rtl">
++    <div class="card-header" style="background: linear-gradient(90deg, #7b2ff7, #f107a3); color: #fff;">
++        <h5 class="mb-0">🔥 با این قدم‌ها فروشگاه‌ت رو می‌ترکونی!</h5>
++        <small>@Model.PendingCount مورد در انتظار — هر مورد را که انجام دادی تیک بزن</small>
++    </div>
++
++    <div class="card-body" style="max-height: 420px; overflow-y: auto;">
++        @if (!Model.Items.Any())
++        {
++            <div class="text-center text-success py-3">
++                <h5>🎉 همهٔ موارد انجام شده! فروشگاه‌ت آمادهٔ انفجار است.</h5>
++            </div>
++        }
++
++        @foreach (var item in Model.Items)
++        {
++            var isDone = item.Status == Nop.Plugin.Misc.MultiTenantStores.Domain.LaunchChecklistStatus.Done;
++            var isSnoozed = item.Status == Nop.Plugin.Misc.MultiTenantStores.Domain.LaunchChecklistStatus.Snoozed;
++
++            @if (isSnoozed) { continue; }
++
++            <div class="row align-items-center py-2 border-bottom @(isDone ? "bg-success-light" : "")" style="border-bottom-color:#eee !important;">
++                <div class="col-md-1 text-center" style="font-size:22px;">@item.IconEmoji</div>
++
++                <div class="col-md-7">
++                    <div class="font-weight-bold">@item.Title</div>
++                    <div class="text-muted small">@item.Description</div>
++
++                    @if (item.IsAutoDetected)
++                    {
++                        <span class="badge @(isDone ? "badge-success" : "badge-warning") mt-1">
++                            @item.AutoStatusLabel
++                        </span>
++                    }
++                </div>
++
++                <div class="col-md-4 text-left">
++                    @if (isDone)
++                    {
++                        <span class="badge badge-success">✓ انجام شده</span>
++                    }
++                    else if (!item.IsAutoDetected)
++                    {
++                        <form method="post" action="@markDoneUrl" style="display:inline-block;">
++                            @Html.AntiForgeryToken()
++                            <input type="hidden" name="itemKey" value="@item.ItemKey" />
++                            <button type="submit" class="btn btn-sm btn-success">✓ انجام دادم</button>
++                        </form>
++                        <form method="post" action="@markLaterUrl" style="display:inline-block;">
++                            @Html.AntiForgeryToken()
++                            <input type="hidden" name="itemKey" value="@item.ItemKey" />
++                            <button type="submit" class="btn btn-sm btn-secondary">بعداً</button>
++                        </form>
++                    }
++                    else
++                    {
++                        <span class="badge badge-warning">در انتظار اتصال</span>
++                    }
++
++                    @if (!string.IsNullOrWhiteSpace(item.GuideUrl))
++                    {
++                        <a href="@item.GuideUrl" target="_blank" rel="noopener" class="btn btn-sm btn-outline-info">راهنما</a>
++                    }
++                </div>
++            </div>
++        }
++    </div>
++</div>
+-- 
+2.39.5
+
