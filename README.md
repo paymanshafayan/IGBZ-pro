@@ -37,6 +37,12 @@ dotnet build IGBZ.sln
 dotnet test IGBZ.sln
 ```
 
+## CI
+
+فایل workflow در `ci/build.yml` قرار دارد (build + test روی هر push). چون اپ گیت‌هابِ
+ایجادکنندهٔ این ریپو هنوز دسترسی `Workflows` ندارد، برای فعال‌سازی آن را به
+`.github/workflows/build.yml` منتقل کنید (یا دسترسی Workflows اپ را فعال کنید تا خودمان انجام دهیم).
+
 ## وضعیت فازها
 
 | فاز | عنوان | وضعیت |
