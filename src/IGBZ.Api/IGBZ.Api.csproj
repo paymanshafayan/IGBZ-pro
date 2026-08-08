@@ -8,4 +8,8 @@
     <ProjectReference Include="..\IGBZ.Application\IGBZ.Application.csproj" />
     <ProjectReference Include="..\IGBZ.Infrastructure\IGBZ.Infrastructure.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- احراز هویت JWT برای Web API -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.0" />
+  </ItemGroup>
 </Project>

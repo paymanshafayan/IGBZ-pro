@@ -1,6 +1,6 @@
 namespace IGBZ.Domain.Tenants;
 
-public class Tenant : Entity, ITenantEntity
+public class Tenant : Entity
 {
     /// <summary>slug تننت — همان شناسهٔ جداسازی (مطابق سند بخش ۶.۱).</summary>
     public string TenantId { get; set; } = string.Empty;

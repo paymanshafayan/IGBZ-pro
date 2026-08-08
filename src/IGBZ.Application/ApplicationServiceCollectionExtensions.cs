@@ -1,9 +1,12 @@
 namespace IGBZ.Application;
 
+using IGBZ.Application.Auth;
 using IGBZ.Application.Discounts;
 using IGBZ.Application.Orders;
 using IGBZ.Application.Payments;
 using IGBZ.Application.Pricing;
+using IGBZ.Application.Provisioning;
+using IGBZ.Application.Subscriptions;
 using IGBZ.Application.Wallets;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -28,8 +31,15 @@ public static class ApplicationServiceCollectionExtensions
         // سفارش
         services.AddScoped<IOrderService, OrderService>();
 
-        // پرداخت (درگاه‌های واقعی در فاز ۲ ثبت می‌شوند)
+        // پرداخت (درگاه‌های واقعی در فاز ۶ ثبت می‌شوند)
         services.AddScoped<IPaymentService, PaymentService>();
+
+        // احراز هویت
+        services.AddScoped<IAuthService, AuthService>();
+
+        // Provisioning + اشتراک
+        services.AddScoped<ITenantProvisioningService, TenantProvisioningService>();
+        services.AddScoped<ITenantSubscriptionService, TenantSubscriptionService>();
 
         return services;
     }
